@@ -1,9 +1,7 @@
-// MyGame.cpp (SFML 3.x) - Wall-occluded flashlight + animated 6 (9 PNG frames)
-// Put your files here:
+// MyGame.cpp (SFML 3.x) - Wall-occluded flashlight WITH range + warm (yellow) light + visible glow
+// Files:
 //   assets/fonts/arial.ttf
 //   assets/sprites/six1.png ... six9.png
-//
-// Target "7" is still a circle for now.
 
 #include <SFML/Graphics.hpp>
 #include <vector>
@@ -11,7 +9,6 @@
 #include <string>
 #include <algorithm>
 #include <iostream>
-#include <filesystem>
 #include <optional>
 #include <cstdint>
 #include <limits>
@@ -23,7 +20,6 @@ static sf::Vector2f normalize(sf::Vector2f v) {
     return { v.x / len, v.y / len };
 }
 
-// SFML 3: FloatRect uses .position and .size
 static bool circleIntersectsRect(const sf::Vector2f& c, float r, const sf::FloatRect& rect) {
     float left = rect.position.x;
     float top = rect.position.y;
@@ -77,23 +73,25 @@ static const sf::BlendMode ERASE_BLEND(
     sf::BlendMode::Equation::Add
 );
 
+// Additive glow on top of the darkness overlay (THIS is what makes the yellow tint visible)
+static const sf::BlendMode ADD_GLOW(
+    sf::BlendMode::Factor::SrcAlpha,
+    sf::BlendMode::Factor::One,
+    sf::BlendMode::Equation::Add
+);
+
 // ---------------- Wall-occluded flashlight (visibility polygon) ----------------
-struct Segment {
-    sf::Vector2f a;
-    sf::Vector2f b;
-};
+struct Segment { sf::Vector2f a, b; };
 
 static float cross2(const sf::Vector2f& a, const sf::Vector2f& b) {
     return a.x * b.y - a.y * b.x;
 }
 
-// Ray: p + t*r, Segment: q + u*s
-// returns true if intersects with t>=0 and u in [0,1], outputs tHit and hit point
 static bool raySegmentIntersect(const sf::Vector2f& p, const sf::Vector2f& r,
     const sf::Vector2f& q, const sf::Vector2f& s,
     float& tHit, sf::Vector2f& hitPoint) {
     float rxs = cross2(r, s);
-    if (std::fabs(rxs) < 1e-8f) return false; // parallel
+    if (std::fabs(rxs) < 1e-8f) return false;
 
     sf::Vector2f qmp = { q.x - p.x, q.y - p.y };
     float t = cross2(qmp, s) / rxs;
@@ -113,7 +111,6 @@ static std::vector<Segment> buildWallSegments(const std::vector<sf::RectangleSha
 
     for (const auto& w : walls) {
         sf::FloatRect b = w.getGlobalBounds();
-
         float x = b.position.x;
         float y = b.position.y;
         float ww = b.size.x;
@@ -129,7 +126,6 @@ static std::vector<Segment> buildWallSegments(const std::vector<sf::RectangleSha
         segs.push_back({ p3, p4 });
         segs.push_back({ p4, p1 });
     }
-
     return segs;
 }
 
@@ -143,22 +139,15 @@ static std::vector<sf::Vector2f> computeVisibilityPolygon(
 
     auto addAnglesForPoint = [&](const sf::Vector2f& pt) {
         float a = std::atan2(pt.y - origin.y, pt.x - origin.x);
-        const float eps = 0.0007f; // tiny offset to avoid missing edges
+        const float eps = 0.0007f;
         angles.push_back(a - eps);
         angles.push_back(a);
         angles.push_back(a + eps);
         };
 
-    for (const auto& s : segs) {
-        addAnglesForPoint(s.a);
-        addAnglesForPoint(s.b);
-    }
+    for (const auto& s : segs) { addAnglesForPoint(s.a); addAnglesForPoint(s.b); }
 
-    struct Hit {
-        float angle;
-        sf::Vector2f p;
-    };
-
+    struct Hit { float angle; sf::Vector2f p; };
     std::vector<Hit> hits;
     hits.reserve(angles.size());
 
@@ -179,7 +168,6 @@ static std::vector<sf::Vector2f> computeVisibilityPolygon(
                 }
             }
         }
-
         hits.push_back({ ang, bestP });
     }
 
@@ -190,8 +178,46 @@ static std::vector<sf::Vector2f> computeVisibilityPolygon(
     std::vector<sf::Vector2f> poly;
     poly.reserve(hits.size());
     for (auto& h : hits) poly.push_back(h.p);
-
     return poly;
+}
+
+// Soft flashlight fan with radial alpha falloff
+static sf::VertexArray buildSoftFan(
+    const sf::Vector2f& origin,
+    const std::vector<sf::Vector2f>& poly,
+    float maxDist,
+    const sf::Color& tint
+) {
+    sf::VertexArray fan(sf::PrimitiveType::TriangleFan);
+
+    fan.append(sf::Vertex(origin, sf::Color(tint.r, tint.g, tint.b, 255)));
+
+    for (const auto& p : poly) {
+        sf::Vector2f d = { p.x - origin.x, p.y - origin.y };
+        float dist = std::sqrt(d.x * d.x + d.y * d.y);
+        float t = std::min(1.f, dist / maxDist);
+
+        float a = 255.f * (1.f - t);
+        a = std::clamp(a, 0.f, 255.f);
+        a = std::max(a, 25.f);
+
+        fan.append(sf::Vertex(p, sf::Color(tint.r, tint.g, tint.b, static_cast<std::uint8_t>(a))));
+    }
+
+    if (!poly.empty()) {
+        sf::Vector2f p = poly.front();
+        sf::Vector2f d = { p.x - origin.x, p.y - origin.y };
+        float dist = std::sqrt(d.x * d.x + d.y * d.y);
+        float t = std::min(1.f, dist / maxDist);
+
+        float a = 255.f * (1.f - t);
+        a = std::clamp(a, 0.f, 255.f);
+        a = std::max(a, 25.f);
+
+        fan.append(sf::Vertex(p, sf::Color(tint.r, tint.g, tint.b, static_cast<std::uint8_t>(a))));
+    }
+
+    return fan;
 }
 
 // ---------------- Main ----------------
@@ -208,7 +234,14 @@ int main() {
     const float ANIM_FPS = 12.f;
     const int   FRAME_COUNT = 9;
 
-    // Window (SFML 3: VideoMode takes Vector2u)
+    // Flashlight tuning
+    const float LIGHT_RANGE = 215.f;                 // range
+    const std::uint8_t DARK_ALPHA = 250;             // darker overall (0..255)
+    const sf::Color WARM_TINT(255, 190, 140, 255);    // yellow-ish color
+
+    // THIS controls how visible the yellow tint is (0..255). Higher = stronger glow.
+    float glowStrength = 120.f;
+
     sf::RenderWindow window(sf::VideoMode({ W, H }), "67 Hunt");
     window.setFramerateLimit(120);
 
@@ -218,28 +251,24 @@ int main() {
     float timeLeft = TIME_LIMIT;
     sf::Clock clock;
 
-    // ---------------- Darkness/Flashlight overlay ----------------
+    // Darkness texture
     sf::RenderTexture darknessRT;
     if (!darknessRT.resize({ W, H })) {
         std::cout << "Failed to create darkness render texture.\n";
-        // still run, but overlay may not show
     }
 
-    // 0 = not dark, 255 = fully black
-    const std::uint8_t DARK_ALPHA = 235;
     sf::RectangleShape darknessRect({ (float)W, (float)H });
     darknessRect.setFillColor(sf::Color(0, 0, 0, DARK_ALPHA));
 
-    // ---------------- Player (circle fallback) ----------------
+    // Player fallback
     sf::CircleShape playerCircle(PLAYER_RADIUS);
     playerCircle.setOrigin({ PLAYER_RADIUS, PLAYER_RADIUS });
     playerCircle.setPosition({ 100.f, 100.f });
     playerCircle.setFillColor(sf::Color::Cyan);
 
-    // ---------------- Player animated sprite (9 PNGs) ----------------
+    // Player animated sprite (six1..six9)
     std::vector<sf::Texture> playerFrames;
     playerFrames.reserve(FRAME_COUNT);
-
     std::optional<sf::Sprite> playerSprite;
 
     int   currentFrame = 0;
@@ -268,31 +297,28 @@ int main() {
         std::cout << "Using fallback circle for player.\n";
     }
 
-    // ---------------- Target ("7") circle only for now ----------------
+    // Target circle
     sf::CircleShape targetCircle(TARGET_RADIUS);
     targetCircle.setOrigin({ TARGET_RADIUS, TARGET_RADIUS });
     targetCircle.setPosition({ 780.f, 520.f });
     targetCircle.setFillColor(sf::Color::Yellow);
 
-    // ---------------- Walls ----------------
+    // Walls
     std::vector<sf::RectangleShape> walls;
-
-    // borders (thickness 20)
     walls.push_back(makeWall(0, 0, (float)W, 20));
     walls.push_back(makeWall(0, (float)H - 20, (float)W, 20));
     walls.push_back(makeWall(0, 0, 20, (float)H));
     walls.push_back(makeWall((float)W - 20, 0, 20, (float)H));
 
-    // obstacles
     walls.push_back(makeWall(200, 120, 450, 25));
     walls.push_back(makeWall(150, 260, 25, 250));
     walls.push_back(makeWall(350, 420, 380, 25));
     walls.push_back(makeWall(650, 180, 25, 190));
 
-    // Build segments once (since walls don't move)
+    // Segments once
     std::vector<Segment> wallSegs = buildWallSegments(walls);
 
-    // ---------------- Font + UI ----------------
+    // Font + UI
     sf::Font font;
     if (!font.openFromFile("assets/fonts/arial.ttf")) {
         std::cout << "Failed to load font: assets/fonts/arial.ttf\n";
@@ -312,42 +338,34 @@ int main() {
     hintText.setFillColor(sf::Color(220, 220, 220));
     hintText.setPosition({ 20.f, 55.f });
 
-    // ---------------- Position helpers ----------------
+    // Position helpers
     auto getPlayerPos = [&]() -> sf::Vector2f {
         return playerSprite ? playerSprite->getPosition() : playerCircle.getPosition();
         };
-
     auto setPlayerPos = [&](sf::Vector2f p) {
         if (playerSprite) playerSprite->setPosition(p);
         playerCircle.setPosition(p);
         };
 
-    // ---------------- Main loop ----------------
     while (window.isOpen()) {
         float dt = clock.restart().asSeconds();
 
-        // SFML 3: pollEvent returns optional
         while (auto ev = window.pollEvent()) {
-            if (ev->is<sf::Event::Closed>()) {
-                window.close();
-            }
+            if (ev->is<sf::Event::Closed>()) window.close();
         }
 
         // Restart
         if (state != State::Playing &&
             sf::Keyboard::isKeyPressed(sf::Keyboard::Key::R)) {
-
             state = State::Playing;
             timeLeft = TIME_LIMIT;
             setPlayerPos({ 100.f, 100.f });
-
             currentFrame = 0;
             animTimer = 0.f;
-
             window.setTitle("67 Hunt");
         }
 
-        // Animate player (only if sprite exists)
+        // Animate player
         if (playerSprite && state == State::Playing) {
             animTimer += dt;
             while (animTimer >= frameTime) {
@@ -377,7 +395,6 @@ int main() {
             sf::Vector2f oldPos = getPlayerPos();
             setPlayerPos(oldPos + dir * PLAYER_SPEED * dt);
 
-            // Wall collision -> revert
             for (const auto& w : walls) {
                 if (circleIntersectsRect(getPlayerPos(), PLAYER_RADIUS, w.getGlobalBounds())) {
                     setPlayerPos(oldPos);
@@ -385,7 +402,6 @@ int main() {
                 }
             }
 
-            // Win condition
             if (circleIntersectsCircle(getPlayerPos(), PLAYER_RADIUS,
                 targetCircle.getPosition(), TARGET_RADIUS)) {
                 state = State::Win;
@@ -413,40 +429,36 @@ int main() {
         if (playerSprite) window.draw(*playerSprite);
         else window.draw(playerCircle);
 
-        // ---------------- Build wall-occluded darkness overlay ----------------
-        // (dark everywhere, then "erase" only the visible polygon)
+        // ---------------- Darkness overlay (range-limited + wall-occluded) ----------------
         darknessRT.clear(sf::Color(0, 0, 0, 0));
         darknessRT.draw(darknessRect);
 
-        // flashlight reach distance
-        float maxDist = 900.f;
-
-        // Compute visibility polygon
         sf::Vector2f origin = getPlayerPos();
-        std::vector<sf::Vector2f> poly = computeVisibilityPolygon(origin, wallSegs, maxDist);
+        std::vector<sf::Vector2f> poly = computeVisibilityPolygon(origin, wallSegs, LIGHT_RANGE);
 
-        // Draw visibility polygon as triangle fan to erase darkness
+        // We'll draw this AFTER the darkness sprite to make tint visible
+        sf::VertexArray glowFan;
+
         if (poly.size() >= 3) {
-            sf::VertexArray fan(sf::PrimitiveType::TriangleFan);
-            fan.append(sf::Vertex(origin, sf::Color(255, 255, 255, 255)));
+            // 1) Erase darkness (RGB doesn't matter here; alpha does)
+            sf::VertexArray eraseFan = buildSoftFan(origin, poly, LIGHT_RANGE, sf::Color(255, 255, 255, 255));
+            darknessRT.draw(eraseFan, ERASE_BLEND);
 
-            for (const auto& p : poly) {
-                fan.append(sf::Vertex(p, sf::Color(255, 255, 255, 255)));
-            }
-
-            // close the fan
-            fan.append(sf::Vertex(poly.front(), sf::Color(255, 255, 255, 255)));
-
-            darknessRT.draw(fan, ERASE_BLEND);
+            // 2) Build warm glow fan for additive pass on the main window
+            sf::Color glowColor = WARM_TINT;
+            glowColor.a = static_cast<std::uint8_t>(std::clamp(glowStrength, 0.f, 255.f));
+            glowFan = buildSoftFan(origin, poly, LIGHT_RANGE, glowColor);
         }
 
         darknessRT.display();
+        window.draw(sf::Sprite(darknessRT.getTexture()));
 
-        // draw overlay on top of the world
-        sf::Sprite darknessSprite(darknessRT.getTexture());
-        window.draw(darknessSprite);
+        // Additive warm glow on top (this is what makes it look yellow)
+        if (poly.size() >= 3) {
+            window.draw(glowFan, ADD_GLOW);
+        }
 
-        // UI on top of overlay
+        // UI on top
         window.draw(timerText);
         if (state != State::Playing) {
             window.draw(centerText);
