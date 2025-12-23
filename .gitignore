@@ -10,10 +10,11 @@ Debug/
 Release/
 x64/
 x86/
-bin/
-obj/
 out/
+build/
 
-# OS junk
-Thumbs.db
-.DS_Store
+# CMake (if you use it later)
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
