@@ -231,8 +231,8 @@ int main() {
     const float TIME_LIMIT = 30.f;
 
     // Animation for the "6"
-    const float ANIM_FPS = 12.f;
-    const int   FRAME_COUNT = 9;
+    const float ANIM_FPS = 6.f;
+    const int   FRAME_COUNT = 2;
 
     // Flashlight tuning
     const float LIGHT_RANGE = 215.f;                 // range
