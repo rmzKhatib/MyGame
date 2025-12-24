@@ -1,7 +1,8 @@
 // MyGame.cpp (SFML 3.x) - Wall-occluded flashlight WITH range + warm (yellow) light + visible glow
 // Files:
 //   assets/fonts/arial.ttf
-//   assets/sprites/six1.png ... six9.png
+//   assets/sprites/six1.png, six2.png
+//   assets/sprites/seven1.png, seven2.png
 
 #include <SFML/Graphics.hpp>
 #include <vector>
@@ -230,17 +231,15 @@ int main() {
     const float PLAYER_SPEED = 320.f;
     const float TIME_LIMIT = 30.f;
 
-    // Animation for the "6"
+    // Animation for the "6" and "7"
     const float ANIM_FPS = 6.f;
     const int   FRAME_COUNT = 2;
 
     // Flashlight tuning
     const float LIGHT_RANGE = 215.f;                 // range
     const std::uint8_t DARK_ALPHA = 250;             // darker overall (0..255)
-    const sf::Color WARM_TINT(255, 190, 140, 255);    // yellow-ish color
-
-    // THIS controls how visible the yellow tint is (0..255). Higher = stronger glow.
-    float glowStrength = 120.f;
+    const sf::Color WARM_TINT(255, 190, 140, 255);   // warm tint color
+    float glowStrength = 120.f;                      // 0..255
 
     sf::RenderWindow window(sf::VideoMode({ W, H }), "67 Hunt");
     window.setFramerateLimit(120);
@@ -260,34 +259,33 @@ int main() {
     sf::RectangleShape darknessRect({ (float)W, (float)H });
     darknessRect.setFillColor(sf::Color(0, 0, 0, DARK_ALPHA));
 
-    // Player fallback
+    // ---------------- Player ("6") ----------------
     sf::CircleShape playerCircle(PLAYER_RADIUS);
     playerCircle.setOrigin({ PLAYER_RADIUS, PLAYER_RADIUS });
     playerCircle.setPosition({ 100.f, 100.f });
     playerCircle.setFillColor(sf::Color::Cyan);
 
-    // Player animated sprite (six1..six9)
     std::vector<sf::Texture> playerFrames;
     playerFrames.reserve(FRAME_COUNT);
     std::optional<sf::Sprite> playerSprite;
 
-    int   currentFrame = 0;
-    float animTimer = 0.f;
+    int   playerFrame = 0;
+    float playerAnimTimer = 0.f;
     float frameTime = 1.f / ANIM_FPS;
 
-    bool framesOK = true;
+    bool playerFramesOK = true;
     for (int i = 1; i <= FRAME_COUNT; ++i) {
         sf::Texture t;
         std::string path = "assets/sprites/six" + std::to_string(i) + ".png";
         if (!t.loadFromFile(path)) {
             std::cout << "Missing player frame: " << path << "\n";
-            framesOK = false;
+            playerFramesOK = false;
             break;
         }
         playerFrames.push_back(std::move(t));
     }
 
-    if (framesOK) {
+    if (playerFramesOK) {
         sf::Sprite s(playerFrames[0]);
         fitSpriteToDiameter(s, playerFrames[0], PLAYER_RADIUS * 2.f);
         s.setPosition({ 100.f, 100.f });
@@ -297,13 +295,44 @@ int main() {
         std::cout << "Using fallback circle for player.\n";
     }
 
-    // Target circle
+    // ---------------- Target ("7") ----------------
+    // Fallback circle (used only if frames are missing)
     sf::CircleShape targetCircle(TARGET_RADIUS);
     targetCircle.setOrigin({ TARGET_RADIUS, TARGET_RADIUS });
     targetCircle.setPosition({ 780.f, 520.f });
     targetCircle.setFillColor(sf::Color::Yellow);
 
-    // Walls
+    // Animated sprite (seven1/seven2)
+    std::vector<sf::Texture> targetFrames;
+    targetFrames.reserve(FRAME_COUNT);
+    std::optional<sf::Sprite> targetSprite;
+
+    int   targetFrame = 0;
+    float targetAnimTimer = 0.f;
+
+    bool targetFramesOK = true;
+    for (int i = 1; i <= FRAME_COUNT; ++i) {
+        sf::Texture t;
+        std::string path = "assets/sprites/seven" + std::to_string(i) + ".png";
+        if (!t.loadFromFile(path)) {
+            std::cout << "Missing target frame: " << path << "\n";
+            targetFramesOK = false;
+            break;
+        }
+        targetFrames.push_back(std::move(t));
+    }
+
+    if (targetFramesOK) {
+        sf::Sprite s(targetFrames[0]);
+        fitSpriteToDiameter(s, targetFrames[0], TARGET_RADIUS * 2.f);
+        s.setPosition({ 780.f, 520.f });
+        targetSprite = s;
+    }
+    else {
+        std::cout << "Using fallback circle for target.\n";
+    }
+
+    // ---------------- Walls ----------------
     std::vector<sf::RectangleShape> walls;
     walls.push_back(makeWall(0, 0, (float)W, 20));
     walls.push_back(makeWall(0, (float)H - 20, (float)W, 20));
@@ -315,10 +344,9 @@ int main() {
     walls.push_back(makeWall(350, 420, 380, 25));
     walls.push_back(makeWall(650, 180, 25, 190));
 
-    // Segments once
     std::vector<Segment> wallSegs = buildWallSegments(walls);
 
-    // Font + UI
+    // ---------------- UI ----------------
     sf::Font font;
     if (!font.openFromFile("assets/fonts/arial.ttf")) {
         std::cout << "Failed to load font: assets/fonts/arial.ttf\n";
@@ -338,13 +366,21 @@ int main() {
     hintText.setFillColor(sf::Color(220, 220, 220));
     hintText.setPosition({ 20.f, 55.f });
 
-    // Position helpers
+    // ---------------- Position helpers ----------------
     auto getPlayerPos = [&]() -> sf::Vector2f {
         return playerSprite ? playerSprite->getPosition() : playerCircle.getPosition();
         };
     auto setPlayerPos = [&](sf::Vector2f p) {
         if (playerSprite) playerSprite->setPosition(p);
         playerCircle.setPosition(p);
+        };
+
+    auto getTargetPos = [&]() -> sf::Vector2f {
+        return targetSprite ? targetSprite->getPosition() : targetCircle.getPosition();
+        };
+    auto setTargetPos = [&](sf::Vector2f p) {
+        if (targetSprite) targetSprite->setPosition(p);
+        targetCircle.setPosition(p);
         };
 
     while (window.isOpen()) {
@@ -355,24 +391,60 @@ int main() {
         }
 
         // Restart
-        if (state != State::Playing &&
-            sf::Keyboard::isKeyPressed(sf::Keyboard::Key::R)) {
+        if (state != State::Playing && sf::Keyboard::isKeyPressed(sf::Keyboard::Key::R)) {
             state = State::Playing;
             timeLeft = TIME_LIMIT;
+
             setPlayerPos({ 100.f, 100.f });
-            currentFrame = 0;
-            animTimer = 0.f;
+            setTargetPos({ 780.f, 520.f });
+
+            playerFrame = 0;
+            targetFrame = 0;
+            playerAnimTimer = 0.f;
+            targetAnimTimer = 0.f;
+
+            if (playerSprite) {
+                playerSprite->setTexture(playerFrames[playerFrame], true);
+                fitSpriteToDiameter(*playerSprite, playerFrames[playerFrame], PLAYER_RADIUS * 2.f);
+            }
+            if (targetSprite) {
+                targetSprite->setTexture(targetFrames[targetFrame], true);
+                fitSpriteToDiameter(*targetSprite, targetFrames[targetFrame], TARGET_RADIUS * 2.f);
+            }
+
             window.setTitle("67 Hunt");
         }
 
-        // Animate player
-        if (playerSprite && state == State::Playing) {
-            animTimer += dt;
-            while (animTimer >= frameTime) {
-                animTimer -= frameTime;
-                currentFrame = (currentFrame + 1) % FRAME_COUNT;
-                playerSprite->setTexture(playerFrames[currentFrame], true);
-                fitSpriteToDiameter(*playerSprite, playerFrames[currentFrame], PLAYER_RADIUS * 2.f);
+        // Animate sprites
+        if (state == State::Playing) {
+            // player animation
+            if (playerSprite) {
+                playerAnimTimer += dt;
+                while (playerAnimTimer >= frameTime) {
+                    playerAnimTimer -= frameTime;
+                    playerFrame = (playerFrame + 1) % FRAME_COUNT;
+
+                    playerSprite->setTexture(playerFrames[playerFrame], true);
+                    fitSpriteToDiameter(*playerSprite, playerFrames[playerFrame], PLAYER_RADIUS * 2.f);
+
+                    // keep exact position
+                    playerSprite->setPosition(getPlayerPos());
+                }
+            }
+
+            // target animation
+            if (targetSprite) {
+                targetAnimTimer += dt;
+                while (targetAnimTimer >= frameTime) {
+                    targetAnimTimer -= frameTime;
+                    targetFrame = (targetFrame + 1) % FRAME_COUNT;
+
+                    targetSprite->setTexture(targetFrames[targetFrame], true);
+                    fitSpriteToDiameter(*targetSprite, targetFrames[targetFrame], TARGET_RADIUS * 2.f);
+
+                    // keep exact position
+                    targetSprite->setPosition(getTargetPos());
+                }
             }
         }
 
@@ -402,8 +474,8 @@ int main() {
                 }
             }
 
-            if (circleIntersectsCircle(getPlayerPos(), PLAYER_RADIUS,
-                targetCircle.getPosition(), TARGET_RADIUS)) {
+            // Win if player touches target (works for circle OR sprite)
+            if (circleIntersectsCircle(getPlayerPos(), PLAYER_RADIUS, getTargetPos(), TARGET_RADIUS)) {
                 state = State::Win;
                 window.setTitle("67 Hunt - YOU MADE 67!");
             }
@@ -423,9 +495,14 @@ int main() {
         // ---------------- Render world ----------------
         window.clear({ 15, 15, 20 });
 
-        window.draw(targetCircle);
+        // draw target
+        if (targetSprite) window.draw(*targetSprite);
+        else window.draw(targetCircle);
+
+        // walls
         for (auto& w : walls) window.draw(w);
 
+        // draw player
         if (playerSprite) window.draw(*playerSprite);
         else window.draw(playerCircle);
 
@@ -436,15 +513,12 @@ int main() {
         sf::Vector2f origin = getPlayerPos();
         std::vector<sf::Vector2f> poly = computeVisibilityPolygon(origin, wallSegs, LIGHT_RANGE);
 
-        // We'll draw this AFTER the darkness sprite to make tint visible
         sf::VertexArray glowFan;
 
         if (poly.size() >= 3) {
-            // 1) Erase darkness (RGB doesn't matter here; alpha does)
             sf::VertexArray eraseFan = buildSoftFan(origin, poly, LIGHT_RANGE, sf::Color(255, 255, 255, 255));
             darknessRT.draw(eraseFan, ERASE_BLEND);
 
-            // 2) Build warm glow fan for additive pass on the main window
             sf::Color glowColor = WARM_TINT;
             glowColor.a = static_cast<std::uint8_t>(std::clamp(glowStrength, 0.f, 255.f));
             glowFan = buildSoftFan(origin, poly, LIGHT_RANGE, glowColor);
@@ -453,7 +527,6 @@ int main() {
         darknessRT.display();
         window.draw(sf::Sprite(darknessRT.getTexture()));
 
-        // Additive warm glow on top (this is what makes it look yellow)
         if (poly.size() >= 3) {
             window.draw(glowFan, ADD_GLOW);
         }
