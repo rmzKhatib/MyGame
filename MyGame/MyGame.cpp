@@ -1,4 +1,6 @@
-// MyGame.cpp (SFML 3.x) - Wall-occluded flashlight WITH range + warm (yellow) light + visible glow
+// MyGame.cpp (SFML 3.x)
+// Big world + camera follow (world-space) + wall-occluded 360° vision with range + warm glow
+//
 // Files:
 //   assets/fonts/arial.ttf
 //   assets/sprites/six1.png, six2.png
@@ -21,6 +23,7 @@ static sf::Vector2f normalize(sf::Vector2f v) {
     return { v.x / len, v.y / len };
 }
 
+// SFML 3: FloatRect uses .position and .size
 static bool circleIntersectsRect(const sf::Vector2f& c, float r, const sf::FloatRect& rect) {
     float left = rect.position.x;
     float top = rect.position.y;
@@ -67,30 +70,52 @@ static void fitSpriteToDiameter(sf::Sprite& spr, const sf::Texture& tex, float d
     spr.setScale({ scaleX, scaleY });
 }
 
-// Blend mode to "erase" darkness using alpha
+// Clamp camera center so view never shows outside the world
+static sf::Vector2f clampViewCenter(
+    sf::Vector2f desiredCenter,
+    sf::Vector2f viewSize,
+    sf::Vector2f worldSize
+) {
+    float halfW = viewSize.x / 2.f;
+    float halfH = viewSize.y / 2.f;
+
+    // If world is smaller than view, just center it.
+    if (worldSize.x <= viewSize.x) desiredCenter.x = worldSize.x / 2.f;
+    else desiredCenter.x = std::clamp(desiredCenter.x, halfW, worldSize.x - halfW);
+
+    if (worldSize.y <= viewSize.y) desiredCenter.y = worldSize.y / 2.f;
+    else desiredCenter.y = std::clamp(desiredCenter.y, halfH, worldSize.y - halfH);
+
+    return desiredCenter;
+}
+
+// ---------------- Blend modes ----------------
+// Erase darkness using alpha
 static const sf::BlendMode ERASE_BLEND(
     sf::BlendMode::Factor::Zero,
     sf::BlendMode::Factor::OneMinusSrcAlpha,
     sf::BlendMode::Equation::Add
 );
 
-// Additive glow on top of the darkness overlay (THIS is what makes the yellow tint visible)
+// Additive warm glow on top of darkness
 static const sf::BlendMode ADD_GLOW(
     sf::BlendMode::Factor::SrcAlpha,
     sf::BlendMode::Factor::One,
     sf::BlendMode::Equation::Add
 );
 
-// ---------------- Wall-occluded flashlight (visibility polygon) ----------------
+// ---------------- Wall-occluded visibility (world-space) ----------------
 struct Segment { sf::Vector2f a, b; };
 
 static float cross2(const sf::Vector2f& a, const sf::Vector2f& b) {
     return a.x * b.y - a.y * b.x;
 }
 
-static bool raySegmentIntersect(const sf::Vector2f& p, const sf::Vector2f& r,
+static bool raySegmentIntersect(
+    const sf::Vector2f& p, const sf::Vector2f& r,
     const sf::Vector2f& q, const sf::Vector2f& s,
-    float& tHit, sf::Vector2f& hitPoint) {
+    float& tHit, sf::Vector2f& hitPoint
+) {
     float rxs = cross2(r, s);
     if (std::fabs(rxs) < 1e-8f) return false;
 
@@ -182,32 +207,33 @@ static std::vector<sf::Vector2f> computeVisibilityPolygon(
     return poly;
 }
 
-// Soft flashlight fan with radial alpha falloff
-static sf::VertexArray buildSoftFan(
-    const sf::Vector2f& origin,
-    const std::vector<sf::Vector2f>& poly,
+// Build triangle fan in *screen coords* with radial alpha falloff (tint is used for glow pass)
+static sf::VertexArray buildSoftFan_Screen(
+    const sf::Vector2f& originScreen,
+    const std::vector<sf::Vector2f>& polyScreen,
     float maxDist,
     const sf::Color& tint
 ) {
     sf::VertexArray fan(sf::PrimitiveType::TriangleFan);
 
-    fan.append(sf::Vertex(origin, sf::Color(tint.r, tint.g, tint.b, 255)));
+    fan.append(sf::Vertex(originScreen, sf::Color(tint.r, tint.g, tint.b, 255)));
 
-    for (const auto& p : poly) {
-        sf::Vector2f d = { p.x - origin.x, p.y - origin.y };
+    for (const auto& p : polyScreen) {
+        sf::Vector2f d = { p.x - originScreen.x, p.y - originScreen.y };
         float dist = std::sqrt(d.x * d.x + d.y * d.y);
         float t = std::min(1.f, dist / maxDist);
 
         float a = 255.f * (1.f - t);
         a = std::clamp(a, 0.f, 255.f);
-        a = std::max(a, 25.f);
+        a = std::max(a, 25.f); // keep a little at edge so it's not a hard cut
 
         fan.append(sf::Vertex(p, sf::Color(tint.r, tint.g, tint.b, static_cast<std::uint8_t>(a))));
     }
 
-    if (!poly.empty()) {
-        sf::Vector2f p = poly.front();
-        sf::Vector2f d = { p.x - origin.x, p.y - origin.y };
+    // Close the fan
+    if (!polyScreen.empty()) {
+        sf::Vector2f p = polyScreen.front();
+        sf::Vector2f d = { p.x - originScreen.x, p.y - originScreen.y };
         float dist = std::sqrt(d.x * d.x + d.y * d.y);
         float t = std::min(1.f, dist / maxDist);
 
@@ -226,6 +252,10 @@ int main() {
     const unsigned W = 900;
     const unsigned H = 650;
 
+    // BIG WORLD (world-space)
+    const float WORLD_W = 2400.f;
+    const float WORLD_H = 1800.f;
+
     const float PLAYER_RADIUS = 22.f;
     const float TARGET_RADIUS = 18.f;
     const float PLAYER_SPEED = 320.f;
@@ -235,14 +265,17 @@ int main() {
     const float ANIM_FPS = 6.f;
     const int   FRAME_COUNT = 2;
 
-    // Flashlight tuning
-    const float LIGHT_RANGE = 215.f;                 // range
-    const std::uint8_t DARK_ALPHA = 250;             // darker overall (0..255)
-    const sf::Color WARM_TINT(255, 190, 140, 255);   // warm tint color
-    float glowStrength = 120.f;                      // 0..255
+    // Vision tuning (world units == pixels because view size == window size, no zoom)
+    const float LIGHT_RANGE = 215.f;
+    const std::uint8_t DARK_ALPHA = 250;                 // darker overall
+    const sf::Color WARM_TINT(255, 190, 140, 255);       // warm glow tint
+    float glowStrength = 120.f;                          // 0..255
 
     sf::RenderWindow window(sf::VideoMode({ W, H }), "67 Hunt");
     window.setFramerateLimit(120);
+
+    // Camera (world-space)
+    sf::View camera(sf::FloatRect({ 0.f, 0.f }, { (float)W, (float)H }));
 
     enum class State { Playing, Win, Lose };
     State state = State::Playing;
@@ -250,7 +283,7 @@ int main() {
     float timeLeft = TIME_LIMIT;
     sf::Clock clock;
 
-    // Darkness texture
+    // Darkness overlay texture (SCREEN SPACE)
     sf::RenderTexture darknessRT;
     if (!darknessRT.resize({ W, H })) {
         std::cout << "Failed to create darkness render texture.\n";
@@ -262,7 +295,7 @@ int main() {
     // ---------------- Player ("6") ----------------
     sf::CircleShape playerCircle(PLAYER_RADIUS);
     playerCircle.setOrigin({ PLAYER_RADIUS, PLAYER_RADIUS });
-    playerCircle.setPosition({ 100.f, 100.f });
+    playerCircle.setPosition({ 200.f, 200.f });
     playerCircle.setFillColor(sf::Color::Cyan);
 
     std::vector<sf::Texture> playerFrames;
@@ -288,7 +321,7 @@ int main() {
     if (playerFramesOK) {
         sf::Sprite s(playerFrames[0]);
         fitSpriteToDiameter(s, playerFrames[0], PLAYER_RADIUS * 2.f);
-        s.setPosition({ 100.f, 100.f });
+        s.setPosition({ 200.f, 200.f });
         playerSprite = s;
     }
     else {
@@ -296,13 +329,11 @@ int main() {
     }
 
     // ---------------- Target ("7") ----------------
-    // Fallback circle (used only if frames are missing)
     sf::CircleShape targetCircle(TARGET_RADIUS);
     targetCircle.setOrigin({ TARGET_RADIUS, TARGET_RADIUS });
-    targetCircle.setPosition({ 780.f, 520.f });
+    targetCircle.setPosition({ 1950.f, 1400.f });
     targetCircle.setFillColor(sf::Color::Yellow);
 
-    // Animated sprite (seven1/seven2)
     std::vector<sf::Texture> targetFrames;
     targetFrames.reserve(FRAME_COUNT);
     std::optional<sf::Sprite> targetSprite;
@@ -325,28 +356,37 @@ int main() {
     if (targetFramesOK) {
         sf::Sprite s(targetFrames[0]);
         fitSpriteToDiameter(s, targetFrames[0], TARGET_RADIUS * 2.f);
-        s.setPosition({ 780.f, 520.f });
+        s.setPosition({ 1950.f, 1400.f });
         targetSprite = s;
     }
     else {
         std::cout << "Using fallback circle for target.\n";
     }
 
-    // ---------------- Walls ----------------
+    // ---------------- Walls (WORLD SPACE) ----------------
     std::vector<sf::RectangleShape> walls;
-    walls.push_back(makeWall(0, 0, (float)W, 20));
-    walls.push_back(makeWall(0, (float)H - 20, (float)W, 20));
-    walls.push_back(makeWall(0, 0, 20, (float)H));
-    walls.push_back(makeWall((float)W - 20, 0, 20, (float)H));
 
-    walls.push_back(makeWall(200, 120, 450, 25));
-    walls.push_back(makeWall(150, 260, 25, 250));
-    walls.push_back(makeWall(350, 420, 380, 25));
-    walls.push_back(makeWall(650, 180, 25, 190));
+    // World border walls (thickness 20)
+    walls.push_back(makeWall(0, 0, WORLD_W, 20));
+    walls.push_back(makeWall(0, WORLD_H - 20, WORLD_W, 20));
+    walls.push_back(makeWall(0, 0, 20, WORLD_H));
+    walls.push_back(makeWall(WORLD_W - 20, 0, 20, WORLD_H));
 
+    // Some obstacles across the world (you can add more later)
+    walls.push_back(makeWall(350, 250, 600, 30));
+    walls.push_back(makeWall(300, 450, 30, 500));
+    walls.push_back(makeWall(700, 820, 650, 30));
+    walls.push_back(makeWall(1250, 380, 30, 380));
+
+    walls.push_back(makeWall(1550, 600, 520, 30));
+    walls.push_back(makeWall(1750, 850, 30, 500));
+    walls.push_back(makeWall(1050, 1250, 900, 30));
+    walls.push_back(makeWall(600, 1100, 30, 450));
+
+    // Build segments once (from world walls)
     std::vector<Segment> wallSegs = buildWallSegments(walls);
 
-    // ---------------- UI ----------------
+    // ---------------- UI (screen space) ----------------
     sf::Font font;
     if (!font.openFromFile("assets/fonts/arial.ttf")) {
         std::cout << "Failed to load font: assets/fonts/arial.ttf\n";
@@ -383,6 +423,7 @@ int main() {
         targetCircle.setPosition(p);
         };
 
+    // ---------------- Main loop ----------------
     while (window.isOpen()) {
         float dt = clock.restart().asSeconds();
 
@@ -395,8 +436,8 @@ int main() {
             state = State::Playing;
             timeLeft = TIME_LIMIT;
 
-            setPlayerPos({ 100.f, 100.f });
-            setTargetPos({ 780.f, 520.f });
+            setPlayerPos({ 200.f, 200.f });
+            setTargetPos({ 1950.f, 1400.f });
 
             playerFrame = 0;
             targetFrame = 0;
@@ -417,33 +458,29 @@ int main() {
 
         // Animate sprites
         if (state == State::Playing) {
-            // player animation
             if (playerSprite) {
                 playerAnimTimer += dt;
                 while (playerAnimTimer >= frameTime) {
                     playerAnimTimer -= frameTime;
                     playerFrame = (playerFrame + 1) % FRAME_COUNT;
 
+                    sf::Vector2f keepPos = getPlayerPos();
                     playerSprite->setTexture(playerFrames[playerFrame], true);
                     fitSpriteToDiameter(*playerSprite, playerFrames[playerFrame], PLAYER_RADIUS * 2.f);
-
-                    // keep exact position
-                    playerSprite->setPosition(getPlayerPos());
+                    playerSprite->setPosition(keepPos);
                 }
             }
 
-            // target animation
             if (targetSprite) {
                 targetAnimTimer += dt;
                 while (targetAnimTimer >= frameTime) {
                     targetAnimTimer -= frameTime;
                     targetFrame = (targetFrame + 1) % FRAME_COUNT;
 
+                    sf::Vector2f keepPos = getTargetPos();
                     targetSprite->setTexture(targetFrames[targetFrame], true);
                     fitSpriteToDiameter(*targetSprite, targetFrames[targetFrame], TARGET_RADIUS * 2.f);
-
-                    // keep exact position
-                    targetSprite->setPosition(getTargetPos());
+                    targetSprite->setPosition(keepPos);
                 }
             }
         }
@@ -474,14 +511,23 @@ int main() {
                 }
             }
 
-            // Win if player touches target (works for circle OR sprite)
             if (circleIntersectsCircle(getPlayerPos(), PLAYER_RADIUS, getTargetPos(), TARGET_RADIUS)) {
                 state = State::Win;
                 window.setTitle("67 Hunt - YOU MADE 67!");
             }
         }
 
-        // UI update
+        // Camera follow (WORLD SPACE)
+        {
+            sf::Vector2f desired = getPlayerPos();
+            sf::Vector2f viewSize = camera.getSize();
+            sf::Vector2f worldSize(WORLD_W, WORLD_H);
+
+            sf::Vector2f clamped = clampViewCenter(desired, viewSize, worldSize);
+            camera.setCenter(clamped);
+        }
+
+        // UI update (screen space)
         timerText.setString("Time: " + std::to_string((int)std::ceil(timeLeft)));
         if (state == State::Win) {
             centerText.setString("YOU MADE 67!");
@@ -492,46 +538,67 @@ int main() {
             setCentered(centerText, W / 2.f, H / 2.f);
         }
 
-        // ---------------- Render world ----------------
+        // ---------------- Render WORLD (camera) ----------------
         window.clear({ 15, 15, 20 });
+        window.setView(camera);
 
-        // draw target
         if (targetSprite) window.draw(*targetSprite);
         else window.draw(targetCircle);
 
-        // walls
         for (auto& w : walls) window.draw(w);
 
-        // draw player
         if (playerSprite) window.draw(*playerSprite);
         else window.draw(playerCircle);
 
-        // ---------------- Darkness overlay (range-limited + wall-occluded) ----------------
+        // ---------------- Build darkness overlay in SCREEN SPACE ----------------
+        // Switch to default view for overlay + UI
+        window.setView(window.getDefaultView());
+
         darknessRT.clear(sf::Color(0, 0, 0, 0));
         darknessRT.draw(darknessRect);
 
-        sf::Vector2f origin = getPlayerPos();
-        std::vector<sf::Vector2f> poly = computeVisibilityPolygon(origin, wallSegs, LIGHT_RANGE);
+        // Visibility polygon computed in WORLD coords
+        sf::Vector2f originWorld = getPlayerPos();
+        std::vector<sf::Vector2f> polyWorld = computeVisibilityPolygon(originWorld, wallSegs, LIGHT_RANGE);
 
-        sf::VertexArray glowFan;
+        // Convert world -> screen coords (based on current camera view)
+        // IMPORTANT: use camera view, not default view
+        sf::Vector2i originPix = window.mapCoordsToPixel(originWorld, camera);
+        sf::Vector2f originScreen((float)originPix.x, (float)originPix.y);
 
-        if (poly.size() >= 3) {
-            sf::VertexArray eraseFan = buildSoftFan(origin, poly, LIGHT_RANGE, sf::Color(255, 255, 255, 255));
+        std::vector<sf::Vector2f> polyScreen;
+        polyScreen.reserve(polyWorld.size());
+        for (const auto& pW : polyWorld) {
+            sf::Vector2i pix = window.mapCoordsToPixel(pW, camera);
+            polyScreen.push_back({ (float)pix.x, (float)pix.y });
+        }
+
+        sf::VertexArray glowFan; // built only if poly is valid
+
+        if (polyScreen.size() >= 3) {
+            // 1) Erase darkness
+            sf::VertexArray eraseFan = buildSoftFan_Screen(
+                originScreen,
+                polyScreen,
+                LIGHT_RANGE,
+                sf::Color(255, 255, 255, 255)
+            );
             darknessRT.draw(eraseFan, ERASE_BLEND);
 
+            // 2) Build glow fan (additive pass on main window)
             sf::Color glowColor = WARM_TINT;
             glowColor.a = static_cast<std::uint8_t>(std::clamp(glowStrength, 0.f, 255.f));
-            glowFan = buildSoftFan(origin, poly, LIGHT_RANGE, glowColor);
+            glowFan = buildSoftFan_Screen(originScreen, polyScreen, LIGHT_RANGE, glowColor);
         }
 
         darknessRT.display();
         window.draw(sf::Sprite(darknessRT.getTexture()));
 
-        if (poly.size() >= 3) {
+        if (polyScreen.size() >= 3) {
             window.draw(glowFan, ADD_GLOW);
         }
 
-        // UI on top
+        // UI on top (screen space)
         window.draw(timerText);
         if (state != State::Playing) {
             window.draw(centerText);
