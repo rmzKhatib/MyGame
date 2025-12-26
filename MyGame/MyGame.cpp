@@ -254,7 +254,7 @@ int main() {
 
     // Vision tuning
     const float LIGHT_RANGE = 215.f;
-    const std::uint8_t DARK_ALPHA = 250;
+    const std::uint8_t DARK_ALPHA = 245;
     const sf::Color WARM_TINT(255, 190, 140, 255);
     float glowStrength = 120.f;
 
