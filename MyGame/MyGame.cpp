@@ -1,5 +1,5 @@
 // MyGame.cpp (SFML 3.x)
-// Big world + camera follow (world-space) + wall-occluded 360° vision with range + warm glow
+// Home screen (menu) + Levels + world-space camera + wall-occluded 360° vision (range + warm glow)
 //
 // Files:
 //   assets/fonts/arial.ttf
@@ -23,7 +23,6 @@ static sf::Vector2f normalize(sf::Vector2f v) {
     return { v.x / len, v.y / len };
 }
 
-// SFML 3: FloatRect uses .position and .size
 static bool circleIntersectsRect(const sf::Vector2f& c, float r, const sf::FloatRect& rect) {
     float left = rect.position.x;
     float top = rect.position.y;
@@ -70,16 +69,10 @@ static void fitSpriteToDiameter(sf::Sprite& spr, const sf::Texture& tex, float d
     spr.setScale({ scaleX, scaleY });
 }
 
-// Clamp camera center so view never shows outside the world
-static sf::Vector2f clampViewCenter(
-    sf::Vector2f desiredCenter,
-    sf::Vector2f viewSize,
-    sf::Vector2f worldSize
-) {
+static sf::Vector2f clampViewCenter(sf::Vector2f desiredCenter, sf::Vector2f viewSize, sf::Vector2f worldSize) {
     float halfW = viewSize.x / 2.f;
     float halfH = viewSize.y / 2.f;
 
-    // If world is smaller than view, just center it.
     if (worldSize.x <= viewSize.x) desiredCenter.x = worldSize.x / 2.f;
     else desiredCenter.x = std::clamp(desiredCenter.x, halfW, worldSize.x - halfW);
 
@@ -90,14 +83,12 @@ static sf::Vector2f clampViewCenter(
 }
 
 // ---------------- Blend modes ----------------
-// Erase darkness using alpha
 static const sf::BlendMode ERASE_BLEND(
     sf::BlendMode::Factor::Zero,
     sf::BlendMode::Factor::OneMinusSrcAlpha,
     sf::BlendMode::Equation::Add
 );
 
-// Additive warm glow on top of darkness
 static const sf::BlendMode ADD_GLOW(
     sf::BlendMode::Factor::SrcAlpha,
     sf::BlendMode::Factor::One,
@@ -207,7 +198,6 @@ static std::vector<sf::Vector2f> computeVisibilityPolygon(
     return poly;
 }
 
-// Build triangle fan in *screen coords* with radial alpha falloff (tint is used for glow pass)
 static sf::VertexArray buildSoftFan_Screen(
     const sf::Vector2f& originScreen,
     const std::vector<sf::Vector2f>& polyScreen,
@@ -215,7 +205,6 @@ static sf::VertexArray buildSoftFan_Screen(
     const sf::Color& tint
 ) {
     sf::VertexArray fan(sf::PrimitiveType::TriangleFan);
-
     fan.append(sf::Vertex(originScreen, sf::Color(tint.r, tint.g, tint.b, 255)));
 
     for (const auto& p : polyScreen) {
@@ -225,12 +214,11 @@ static sf::VertexArray buildSoftFan_Screen(
 
         float a = 255.f * (1.f - t);
         a = std::clamp(a, 0.f, 255.f);
-        a = std::max(a, 25.f); // keep a little at edge so it's not a hard cut
+        a = std::max(a, 25.f);
 
         fan.append(sf::Vertex(p, sf::Color(tint.r, tint.g, tint.b, static_cast<std::uint8_t>(a))));
     }
 
-    // Close the fan
     if (!polyScreen.empty()) {
         sf::Vector2f p = polyScreen.front();
         sf::Vector2f d = { p.x - originScreen.x, p.y - originScreen.y };
@@ -252,50 +240,53 @@ int main() {
     const unsigned W = 900;
     const unsigned H = 650;
 
-    // BIG WORLD (world-space)
-    const float WORLD_W = 2400.f;
-    const float WORLD_H = 1800.f;
+    // WORLD SIZE (levels will set these)
+    float WORLD_W = 2400.f;
+    float WORLD_H = 1800.f;
 
     const float PLAYER_RADIUS = 22.f;
     const float TARGET_RADIUS = 18.f;
     const float PLAYER_SPEED = 320.f;
-    const float TIME_LIMIT = 30.f;
 
     // Animation for the "6" and "7"
     const float ANIM_FPS = 6.f;
     const int   FRAME_COUNT = 2;
 
-    // Vision tuning (world units == pixels because view size == window size, no zoom)
+    // Vision tuning
     const float LIGHT_RANGE = 215.f;
-    const std::uint8_t DARK_ALPHA = 250;                 // darker overall
-    const sf::Color WARM_TINT(255, 190, 140, 255);       // warm glow tint
-    float glowStrength = 120.f;                          // 0..255
+    const std::uint8_t DARK_ALPHA = 250;
+    const sf::Color WARM_TINT(255, 190, 140, 255);
+    float glowStrength = 120.f;
 
     sf::RenderWindow window(sf::VideoMode({ W, H }), "67 Hunt");
     window.setFramerateLimit(120);
 
-    // Camera (world-space)
-    sf::View camera(sf::FloatRect({ 0.f, 0.f }, { (float)W, (float)H }));
+    // States
+    enum class GameMode { Menu, Playing, Win, Lose };
+    GameMode mode = GameMode::Menu;
 
-    enum class State { Playing, Win, Lose };
-    State state = State::Playing;
+    int currentLevel = 1;
 
-    float timeLeft = TIME_LIMIT;
+    // Timer per level
+    const float LEVEL_TIME_LIMIT = 30.f;
+    float timeLeft = LEVEL_TIME_LIMIT;
     sf::Clock clock;
 
-    // Darkness overlay texture (SCREEN SPACE)
+    // Camera
+    sf::View camera(sf::FloatRect({ 0.f, 0.f }, { (float)W, (float)H }));
+
+    // Darkness overlay texture (screen)
     sf::RenderTexture darknessRT;
     if (!darknessRT.resize({ W, H })) {
         std::cout << "Failed to create darkness render texture.\n";
     }
-
     sf::RectangleShape darknessRect({ (float)W, (float)H });
     darknessRect.setFillColor(sf::Color(0, 0, 0, DARK_ALPHA));
 
-    // ---------------- Player ("6") ----------------
+    // ---------------- Sprites (player + target) ----------------
+    // Player fallback
     sf::CircleShape playerCircle(PLAYER_RADIUS);
     playerCircle.setOrigin({ PLAYER_RADIUS, PLAYER_RADIUS });
-    playerCircle.setPosition({ 200.f, 200.f });
     playerCircle.setFillColor(sf::Color::Cyan);
 
     std::vector<sf::Texture> playerFrames;
@@ -317,21 +308,18 @@ int main() {
         }
         playerFrames.push_back(std::move(t));
     }
-
     if (playerFramesOK) {
         sf::Sprite s(playerFrames[0]);
         fitSpriteToDiameter(s, playerFrames[0], PLAYER_RADIUS * 2.f);
-        s.setPosition({ 200.f, 200.f });
         playerSprite = s;
     }
     else {
         std::cout << "Using fallback circle for player.\n";
     }
 
-    // ---------------- Target ("7") ----------------
+    // Target fallback
     sf::CircleShape targetCircle(TARGET_RADIUS);
     targetCircle.setOrigin({ TARGET_RADIUS, TARGET_RADIUS });
-    targetCircle.setPosition({ 1950.f, 1400.f });
     targetCircle.setFillColor(sf::Color::Yellow);
 
     std::vector<sf::Texture> targetFrames;
@@ -352,45 +340,133 @@ int main() {
         }
         targetFrames.push_back(std::move(t));
     }
-
     if (targetFramesOK) {
         sf::Sprite s(targetFrames[0]);
         fitSpriteToDiameter(s, targetFrames[0], TARGET_RADIUS * 2.f);
-        s.setPosition({ 1950.f, 1400.f });
         targetSprite = s;
     }
     else {
         std::cout << "Using fallback circle for target.\n";
     }
 
-    // ---------------- Walls (WORLD SPACE) ----------------
+    // ---------------- Level data (walls + spawns) ----------------
     std::vector<sf::RectangleShape> walls;
+    std::vector<Segment> wallSegs;
 
-    // World border walls (thickness 20)
-    walls.push_back(makeWall(0, 0, WORLD_W, 20));
-    walls.push_back(makeWall(0, WORLD_H - 20, WORLD_W, 20));
-    walls.push_back(makeWall(0, 0, 20, WORLD_H));
-    walls.push_back(makeWall(WORLD_W - 20, 0, 20, WORLD_H));
+    auto setPlayerPos = [&](sf::Vector2f p) {
+        if (playerSprite) playerSprite->setPosition(p);
+        playerCircle.setPosition(p);
+        };
+    auto getPlayerPos = [&]() -> sf::Vector2f {
+        return playerSprite ? playerSprite->getPosition() : playerCircle.getPosition();
+        };
 
-    // Some obstacles across the world (you can add more later)
-    walls.push_back(makeWall(350, 250, 600, 30));
-    walls.push_back(makeWall(300, 450, 30, 500));
-    walls.push_back(makeWall(700, 820, 650, 30));
-    walls.push_back(makeWall(1250, 380, 30, 380));
+    auto setTargetPos = [&](sf::Vector2f p) {
+        if (targetSprite) targetSprite->setPosition(p);
+        targetCircle.setPosition(p);
+        };
+    auto getTargetPos = [&]() -> sf::Vector2f {
+        return targetSprite ? targetSprite->getPosition() : targetCircle.getPosition();
+        };
 
-    walls.push_back(makeWall(1550, 600, 520, 30));
-    walls.push_back(makeWall(1750, 850, 30, 500));
-    walls.push_back(makeWall(1050, 1250, 900, 30));
-    walls.push_back(makeWall(600, 1100, 30, 450));
+    auto resetAnimations = [&]() {
+        playerFrame = 0;
+        targetFrame = 0;
+        playerAnimTimer = 0.f;
+        targetAnimTimer = 0.f;
 
-    // Build segments once (from world walls)
-    std::vector<Segment> wallSegs = buildWallSegments(walls);
+        if (playerSprite && !playerFrames.empty()) {
+            sf::Vector2f keep = getPlayerPos();
+            playerSprite->setTexture(playerFrames[playerFrame], true);
+            fitSpriteToDiameter(*playerSprite, playerFrames[playerFrame], PLAYER_RADIUS * 2.f);
+            playerSprite->setPosition(keep);
+        }
+        if (targetSprite && !targetFrames.empty()) {
+            sf::Vector2f keep = getTargetPos();
+            targetSprite->setTexture(targetFrames[targetFrame], true);
+            fitSpriteToDiameter(*targetSprite, targetFrames[targetFrame], TARGET_RADIUS * 2.f);
+            targetSprite->setPosition(keep);
+        }
+        };
+
+    auto loadLevel = [&](int level) {
+        currentLevel = level;
+
+        // reset timer + mode
+        timeLeft = LEVEL_TIME_LIMIT;
+        mode = GameMode::Playing;
+
+        walls.clear();
+
+        if (level == 1) {
+            WORLD_W = 2400.f; WORLD_H = 1800.f;
+
+            // borders
+            walls.push_back(makeWall(0, 0, WORLD_W, 20));
+            walls.push_back(makeWall(0, WORLD_H - 20, WORLD_W, 20));
+            walls.push_back(makeWall(0, 0, 20, WORLD_H));
+            walls.push_back(makeWall(WORLD_W - 20, 0, 20, WORLD_H));
+
+            // obstacles
+            walls.push_back(makeWall(350, 250, 600, 30));
+            walls.push_back(makeWall(300, 450, 30, 500));
+            walls.push_back(makeWall(700, 820, 650, 30));
+            walls.push_back(makeWall(1250, 380, 30, 380));
+            walls.push_back(makeWall(1550, 600, 520, 30));
+            walls.push_back(makeWall(1750, 850, 30, 500));
+            walls.push_back(makeWall(1050, 1250, 900, 30));
+            walls.push_back(makeWall(600, 1100, 30, 450));
+
+            setPlayerPos({ 200.f, 200.f });
+            setTargetPos({ 1950.f, 1400.f });
+        }
+        else { // level 2
+            WORLD_W = 2800.f; WORLD_H = 2000.f;
+
+            // borders
+            walls.push_back(makeWall(0, 0, WORLD_W, 20));
+            walls.push_back(makeWall(0, WORLD_H - 20, WORLD_W, 20));
+            walls.push_back(makeWall(0, 0, 20, WORLD_H));
+            walls.push_back(makeWall(WORLD_W - 20, 0, 20, WORLD_H));
+
+            // more maze-ish
+            walls.push_back(makeWall(250, 250, 900, 30));
+            walls.push_back(makeWall(250, 250, 30, 700));
+            walls.push_back(makeWall(250, 920, 1200, 30));
+
+            walls.push_back(makeWall(600, 520, 30, 850));
+            walls.push_back(makeWall(600, 520, 800, 30));
+            walls.push_back(makeWall(1370, 520, 30, 650));
+            walls.push_back(makeWall(900, 1170, 500, 30));
+
+            walls.push_back(makeWall(1700, 300, 30, 900));
+            walls.push_back(makeWall(1700, 300, 800, 30));
+            walls.push_back(makeWall(2500, 300, 30, 1300));
+            walls.push_back(makeWall(1700, 1570, 830, 30));
+
+            setPlayerPos({ 140.f, 140.f });
+            setTargetPos({ 2550.f, 1750.f });
+        }
+
+        wallSegs = buildWallSegments(walls);
+        resetAnimations();
+
+        window.setTitle("67 Hunt - Level " + std::to_string(currentLevel));
+        };
 
     // ---------------- UI (screen space) ----------------
     sf::Font font;
     if (!font.openFromFile("assets/fonts/arial.ttf")) {
         std::cout << "Failed to load font: assets/fonts/arial.ttf\n";
     }
+
+    sf::Text titleText(font, "67 Hunt");
+    titleText.setCharacterSize(78);
+    titleText.setFillColor(sf::Color::White);
+
+    sf::Text menuText(font, "Press 1 for Level 1\nPress 2 for Level 2\nESC to Quit");
+    menuText.setCharacterSize(28);
+    menuText.setFillColor(sf::Color(220, 220, 220));
 
     sf::Text timerText(font, "Time: 30");
     timerText.setCharacterSize(24);
@@ -401,27 +477,17 @@ int main() {
     centerText.setCharacterSize(52);
     centerText.setFillColor(sf::Color::White);
 
-    sf::Text hintText(font, "Press R to restart");
+    sf::Text hintText(font, "R = restart level    M = menu");
     hintText.setCharacterSize(22);
     hintText.setFillColor(sf::Color(220, 220, 220));
     hintText.setPosition({ 20.f, 55.f });
 
-    // ---------------- Position helpers ----------------
-    auto getPlayerPos = [&]() -> sf::Vector2f {
-        return playerSprite ? playerSprite->getPosition() : playerCircle.getPosition();
-        };
-    auto setPlayerPos = [&](sf::Vector2f p) {
-        if (playerSprite) playerSprite->setPosition(p);
-        playerCircle.setPosition(p);
-        };
+    // Center menu text once
+    setCentered(titleText, W / 2.f, H / 2.f - 140.f);
+    setCentered(menuText, W / 2.f, H / 2.f + 10.f);
 
-    auto getTargetPos = [&]() -> sf::Vector2f {
-        return targetSprite ? targetSprite->getPosition() : targetCircle.getPosition();
-        };
-    auto setTargetPos = [&](sf::Vector2f p) {
-        if (targetSprite) targetSprite->setPosition(p);
-        targetCircle.setPosition(p);
-        };
+    // Start in menu view
+    window.setView(window.getDefaultView());
 
     // ---------------- Main loop ----------------
     while (window.isOpen()) {
@@ -431,33 +497,41 @@ int main() {
             if (ev->is<sf::Event::Closed>()) window.close();
         }
 
-        // Restart
-        if (state != State::Playing && sf::Keyboard::isKeyPressed(sf::Keyboard::Key::R)) {
-            state = State::Playing;
-            timeLeft = TIME_LIMIT;
-
-            setPlayerPos({ 200.f, 200.f });
-            setTargetPos({ 1950.f, 1400.f });
-
-            playerFrame = 0;
-            targetFrame = 0;
-            playerAnimTimer = 0.f;
-            targetAnimTimer = 0.f;
-
-            if (playerSprite) {
-                playerSprite->setTexture(playerFrames[playerFrame], true);
-                fitSpriteToDiameter(*playerSprite, playerFrames[playerFrame], PLAYER_RADIUS * 2.f);
-            }
-            if (targetSprite) {
-                targetSprite->setTexture(targetFrames[targetFrame], true);
-                fitSpriteToDiameter(*targetSprite, targetFrames[targetFrame], TARGET_RADIUS * 2.f);
-            }
-
-            window.setTitle("67 Hunt");
+        // Global hotkeys
+        if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Escape)) {
+            window.close();
         }
 
-        // Animate sprites
-        if (state == State::Playing) {
+        // MENU
+        if (mode == GameMode::Menu) {
+            if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Num1)) loadLevel(1);
+            if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Num2)) loadLevel(2);
+
+            // Render menu
+            window.setView(window.getDefaultView());
+            window.clear(sf::Color(10, 10, 14));
+            window.draw(titleText);
+            window.draw(menuText);
+            window.display();
+            continue;
+        }
+
+        // Back to menu from win/lose
+        if ((mode == GameMode::Win || mode == GameMode::Lose) &&
+            sf::Keyboard::isKeyPressed(sf::Keyboard::Key::M)) {
+            mode = GameMode::Menu;
+            window.setTitle("67 Hunt");
+            continue;
+        }
+
+        // Restart current level
+        if ((mode == GameMode::Win || mode == GameMode::Lose) &&
+            sf::Keyboard::isKeyPressed(sf::Keyboard::Key::R)) {
+            loadLevel(currentLevel);
+        }
+
+        // Animate sprites (only while playing)
+        if (mode == GameMode::Playing) {
             if (playerSprite) {
                 playerAnimTimer += dt;
                 while (playerAnimTimer >= frameTime) {
@@ -485,13 +559,13 @@ int main() {
             }
         }
 
-        // Update game
-        if (state == State::Playing) {
+        // Update gameplay
+        if (mode == GameMode::Playing) {
             timeLeft -= dt;
             if (timeLeft <= 0.f) {
                 timeLeft = 0.f;
-                state = State::Lose;
-                window.setTitle("67 Hunt - TIME'S UP");
+                mode = GameMode::Lose;
+                window.setTitle("67 Hunt - TIME'S UP (M = menu)");
             }
 
             sf::Vector2f dir(0.f, 0.f);
@@ -512,33 +586,31 @@ int main() {
             }
 
             if (circleIntersectsCircle(getPlayerPos(), PLAYER_RADIUS, getTargetPos(), TARGET_RADIUS)) {
-                state = State::Win;
-                window.setTitle("67 Hunt - YOU MADE 67!");
+                mode = GameMode::Win;
+                window.setTitle("67 Hunt - YOU MADE 67! (M = menu)");
             }
         }
 
-        // Camera follow (WORLD SPACE)
+        // Camera follow
         {
             sf::Vector2f desired = getPlayerPos();
-            sf::Vector2f viewSize = camera.getSize();
-            sf::Vector2f worldSize(WORLD_W, WORLD_H);
-
-            sf::Vector2f clamped = clampViewCenter(desired, viewSize, worldSize);
+            sf::Vector2f clamped = clampViewCenter(desired, camera.getSize(), { WORLD_W, WORLD_H });
             camera.setCenter(clamped);
         }
 
-        // UI update (screen space)
+        // UI update
         timerText.setString("Time: " + std::to_string((int)std::ceil(timeLeft)));
-        if (state == State::Win) {
+
+        if (mode == GameMode::Win) {
             centerText.setString("YOU MADE 67!");
             setCentered(centerText, W / 2.f, H / 2.f);
         }
-        else if (state == State::Lose) {
+        else if (mode == GameMode::Lose) {
             centerText.setString("TIME'S UP!");
             setCentered(centerText, W / 2.f, H / 2.f);
         }
 
-        // ---------------- Render WORLD (camera) ----------------
+        // ---------------- Render WORLD ----------------
         window.clear({ 15, 15, 20 });
         window.setView(camera);
 
@@ -550,19 +622,16 @@ int main() {
         if (playerSprite) window.draw(*playerSprite);
         else window.draw(playerCircle);
 
-        // ---------------- Build darkness overlay in SCREEN SPACE ----------------
-        // Switch to default view for overlay + UI
+        // ---------------- Overlay + UI (screen space) ----------------
         window.setView(window.getDefaultView());
 
+        // Darkness overlay
         darknessRT.clear(sf::Color(0, 0, 0, 0));
         darknessRT.draw(darknessRect);
 
-        // Visibility polygon computed in WORLD coords
         sf::Vector2f originWorld = getPlayerPos();
         std::vector<sf::Vector2f> polyWorld = computeVisibilityPolygon(originWorld, wallSegs, LIGHT_RANGE);
 
-        // Convert world -> screen coords (based on current camera view)
-        // IMPORTANT: use camera view, not default view
         sf::Vector2i originPix = window.mapCoordsToPixel(originWorld, camera);
         sf::Vector2f originScreen((float)originPix.x, (float)originPix.y);
 
@@ -573,10 +642,9 @@ int main() {
             polyScreen.push_back({ (float)pix.x, (float)pix.y });
         }
 
-        sf::VertexArray glowFan; // built only if poly is valid
+        sf::VertexArray glowFan;
 
         if (polyScreen.size() >= 3) {
-            // 1) Erase darkness
             sf::VertexArray eraseFan = buildSoftFan_Screen(
                 originScreen,
                 polyScreen,
@@ -585,7 +653,6 @@ int main() {
             );
             darknessRT.draw(eraseFan, ERASE_BLEND);
 
-            // 2) Build glow fan (additive pass on main window)
             sf::Color glowColor = WARM_TINT;
             glowColor.a = static_cast<std::uint8_t>(std::clamp(glowStrength, 0.f, 255.f));
             glowFan = buildSoftFan_Screen(originScreen, polyScreen, LIGHT_RANGE, glowColor);
@@ -593,14 +660,11 @@ int main() {
 
         darknessRT.display();
         window.draw(sf::Sprite(darknessRT.getTexture()));
+        if (polyScreen.size() >= 3) window.draw(glowFan, ADD_GLOW);
 
-        if (polyScreen.size() >= 3) {
-            window.draw(glowFan, ADD_GLOW);
-        }
-
-        // UI on top (screen space)
+        // UI
         window.draw(timerText);
-        if (state != State::Playing) {
+        if (mode == GameMode::Win || mode == GameMode::Lose) {
             window.draw(centerText);
             window.draw(hintText);
         }
