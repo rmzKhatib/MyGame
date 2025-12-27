@@ -1,5 +1,5 @@
 // MyGame.cpp (SFML 3.x)
-// Home screen (menu) + Levels + world-space camera + wall-occluded 360° vision (range + warm glow)
+// Keyboard-only menu + Multiple named levels + Next level flow + world-space camera + wall-occluded 360° vision (range + warm glow)
 //
 // Files:
 //   assets/fonts/arial.ttf
@@ -82,6 +82,14 @@ static sf::Vector2f clampViewCenter(sf::Vector2f desiredCenter, sf::Vector2f vie
     return desiredCenter;
 }
 
+// Simple edge-triggered key press (so holding a key doesn't spam)
+static bool pressedOnce(sf::Keyboard::Key key, bool& wasDown) {
+    bool down = sf::Keyboard::isKeyPressed(key);
+    bool fire = down && !wasDown;
+    wasDown = down;
+    return fire;
+}
+
 // ---------------- Blend modes ----------------
 static const sf::BlendMode ERASE_BLEND(
     sf::BlendMode::Factor::Zero,
@@ -95,7 +103,7 @@ static const sf::BlendMode ADD_GLOW(
     sf::BlendMode::Equation::Add
 );
 
-// ---------------- Wall-occluded visibility (world-space) ----------------
+// ---------------- Wall-occluded visibility ----------------
 struct Segment { sf::Vector2f a, b; };
 
 static float cross2(const sf::Vector2f& a, const sf::Vector2f& b) {
@@ -198,6 +206,7 @@ static std::vector<sf::Vector2f> computeVisibilityPolygon(
     return poly;
 }
 
+// Soft fan built in SCREEN space (for darkness RT)
 static sf::VertexArray buildSoftFan_Screen(
     const sf::Vector2f& originScreen,
     const std::vector<sf::Vector2f>& polyScreen,
@@ -235,42 +244,220 @@ static sf::VertexArray buildSoftFan_Screen(
     return fan;
 }
 
+// ---------------- Level definitions ----------------
+struct RectF { float x, y, w, h; };
+
+struct LevelDef {
+    std::string name;
+    float worldW;
+    float worldH;
+    sf::Vector2f playerSpawn;
+    sf::Vector2f targetSpawn;
+    std::vector<RectF> wallRects; // x,y,w,h (simple + compatible)
+};
+
+static std::vector<LevelDef> makeLevels() {
+    std::vector<LevelDef> levels;
+
+    // Level 1
+    {
+        LevelDef L;
+        L.name = "The Warmup";
+        L.worldW = 2400.f; L.worldH = 1800.f;
+        L.playerSpawn = { 200.f, 200.f };
+        L.targetSpawn = { 1950.f, 1400.f };
+
+        // borders
+        L.wallRects.push_back({ 0, 0, L.worldW, 20 });
+        L.wallRects.push_back({ 0, L.worldH - 20, L.worldW, 20 });
+        L.wallRects.push_back({ 0, 0, 20, L.worldH });
+        L.wallRects.push_back({ L.worldW - 20, 0, 20, L.worldH });
+
+        // obstacles
+        L.wallRects.push_back({ 350, 250, 600, 30 });
+        L.wallRects.push_back({ 300, 450, 30, 500 });
+        L.wallRects.push_back({ 700, 820, 650, 30 });
+        L.wallRects.push_back({ 1250, 380, 30, 380 });
+        L.wallRects.push_back({ 1550, 600, 520, 30 });
+        L.wallRects.push_back({ 1750, 850, 30, 500 });
+        L.wallRects.push_back({ 1050, 1250, 900, 30 });
+        L.wallRects.push_back({ 600, 1100, 30, 450 });
+
+        levels.push_back(std::move(L));
+    }
+
+    // Level 2
+    {
+        LevelDef L;
+        L.name = "Hallway Tricks";
+        L.worldW = 2800.f; L.worldH = 2000.f;
+        L.playerSpawn = { 140.f, 140.f };
+        L.targetSpawn = { 2550.f, 1750.f };
+
+        // borders
+        L.wallRects.push_back({ 0, 0, L.worldW, 20 });
+        L.wallRects.push_back({ 0, L.worldH - 20, L.worldW, 20 });
+        L.wallRects.push_back({ 0, 0, 20, L.worldH });
+        L.wallRects.push_back({ L.worldW - 20, 0, 20, L.worldH });
+
+        // maze-ish
+        L.wallRects.push_back({ 250, 250, 900, 30 });
+        L.wallRects.push_back({ 250, 250, 30, 700 });
+        L.wallRects.push_back({ 250, 920, 1200, 30 });
+
+        L.wallRects.push_back({ 600, 520, 30, 850 });
+        L.wallRects.push_back({ 600, 520, 800, 30 });
+        L.wallRects.push_back({ 1370, 520, 30, 650 });
+        L.wallRects.push_back({ 900, 1170, 500, 30 });
+
+        L.wallRects.push_back({ 1700, 300, 30, 900 });
+        L.wallRects.push_back({ 1700, 300, 800, 30 });
+        L.wallRects.push_back({ 2500, 300, 30, 1300 });
+        L.wallRects.push_back({ 1700, 1570, 830, 30 });
+
+        levels.push_back(std::move(L));
+    }
+
+    // Level 3
+    {
+        LevelDef L;
+        L.name = "The Split";
+        L.worldW = 2600.f; L.worldH = 1900.f;
+        L.playerSpawn = { 200.f, 1650.f };
+        L.targetSpawn = { 2350.f, 250.f };
+
+        // borders
+        L.wallRects.push_back({ 0, 0, L.worldW, 20 });
+        L.wallRects.push_back({ 0, L.worldH - 20, L.worldW, 20 });
+        L.wallRects.push_back({ 0, 0, 20, L.worldH });
+        L.wallRects.push_back({ L.worldW - 20, 0, 20, L.worldH });
+
+        // divider with gap
+        L.wallRects.push_back({ 1200, 100, 30, 650 });
+        L.wallRects.push_back({ 1200, 950, 30, 850 });
+
+        // lanes
+        L.wallRects.push_back({ 250, 250, 700, 30 });
+        L.wallRects.push_back({ 250, 450, 700, 30 });
+        L.wallRects.push_back({ 1550, 250, 800, 30 });
+        L.wallRects.push_back({ 1550, 450, 800, 30 });
+
+        L.wallRects.push_back({ 250, 1250, 900, 30 });
+        L.wallRects.push_back({ 250, 1450, 900, 30 });
+        L.wallRects.push_back({ 1400, 1250, 950, 30 });
+
+        levels.push_back(std::move(L));
+    }
+
+    // Level 4
+    {
+        LevelDef L;
+        L.name = "The Box";
+        L.worldW = 2200.f; L.worldH = 1600.f;
+        L.playerSpawn = { 140.f, 140.f };
+        L.targetSpawn = { 2050.f, 1450.f };
+
+        // borders
+        L.wallRects.push_back({ 0, 0, L.worldW, 20 });
+        L.wallRects.push_back({ 0, L.worldH - 20, L.worldW, 20 });
+        L.wallRects.push_back({ 0, 0, 20, L.worldH });
+        L.wallRects.push_back({ L.worldW - 20, 0, 20, L.worldH });
+
+        // nested boxes
+        L.wallRects.push_back({ 300, 300, 1600, 30 });
+        L.wallRects.push_back({ 300, 300, 30, 1000 });
+        L.wallRects.push_back({ 1870, 300, 30, 1030 });
+        L.wallRects.push_back({ 300, 1300, 1600, 30 });
+
+        L.wallRects.push_back({ 600, 600, 1000, 30 });
+        L.wallRects.push_back({ 600, 600, 30, 500 });
+        L.wallRects.push_back({ 1570, 600, 30, 530 });
+        L.wallRects.push_back({ 600, 1100, 1000, 30 });
+
+        // inner blockers
+        L.wallRects.push_back({ 900, 750, 30, 350 });
+        L.wallRects.push_back({ 1200, 750, 30, 350 });
+
+        levels.push_back(std::move(L));
+    }
+
+    // Level 5
+    {
+        LevelDef L;
+        L.name = "Long Run";
+        L.worldW = 3200.f; L.worldH = 1400.f;
+        L.playerSpawn = { 160.f, 700.f };
+        L.targetSpawn = { 3050.f, 700.f };
+
+        // borders
+        L.wallRects.push_back({ 0, 0, L.worldW, 20 });
+        L.wallRects.push_back({ 0, L.worldH - 20, L.worldW, 20 });
+        L.wallRects.push_back({ 0, 0, 20, L.worldH });
+        L.wallRects.push_back({ L.worldW - 20, 0, 20, L.worldH });
+
+        // zigzag corridor
+        L.wallRects.push_back({ 400, 200, 30, 1000 });
+        L.wallRects.push_back({ 700, 200, 30, 1000 });
+        L.wallRects.push_back({ 1000, 200, 30, 1000 });
+        L.wallRects.push_back({ 1300, 200, 30, 1000 });
+        L.wallRects.push_back({ 1600, 200, 30, 1000 });
+        L.wallRects.push_back({ 1900, 200, 30, 1000 });
+        L.wallRects.push_back({ 2200, 200, 30, 1000 });
+        L.wallRects.push_back({ 2500, 200, 30, 1000 });
+        L.wallRects.push_back({ 2800, 200, 30, 1000 });
+
+        // alternating blockers
+        L.wallRects.push_back({ 430, 200, 270, 30 });
+        L.wallRects.push_back({ 730, 1170, 270, 30 });
+        L.wallRects.push_back({ 1030, 200, 270, 30 });
+        L.wallRects.push_back({ 1330, 1170, 270, 30 });
+        L.wallRects.push_back({ 1630, 200, 270, 30 });
+        L.wallRects.push_back({ 1930, 1170, 270, 30 });
+        L.wallRects.push_back({ 2230, 200, 270, 30 });
+        L.wallRects.push_back({ 2530, 1170, 270, 30 });
+
+        levels.push_back(std::move(L));
+    }
+
+    return levels;
+}
+
 // ---------------- Main ----------------
 int main() {
     const unsigned W = 900;
     const unsigned H = 650;
 
-    // WORLD SIZE (levels will set these)
-    float WORLD_W = 2400.f;
-    float WORLD_H = 1800.f;
-
+    // Player/game tuning
     const float PLAYER_RADIUS = 22.f;
     const float TARGET_RADIUS = 18.f;
     const float PLAYER_SPEED = 320.f;
 
-    // Animation for the "6" and "7"
+    // Anim
     const float ANIM_FPS = 6.f;
     const int   FRAME_COUNT = 2;
 
     // Vision tuning
     const float LIGHT_RANGE = 215.f;
-    const std::uint8_t DARK_ALPHA = 245;
+    const std::uint8_t DARK_ALPHA = 250;
     const sf::Color WARM_TINT(255, 190, 140, 255);
     float glowStrength = 120.f;
 
-    sf::RenderWindow window(sf::VideoMode({ W, H }), "67 Hunt");
-    window.setFramerateLimit(120);
-
-    // States
-    enum class GameMode { Menu, Playing, Win, Lose };
-    GameMode mode = GameMode::Menu;
-
-    int currentLevel = 1;
+    // Levels
+    std::vector<LevelDef> levels = makeLevels();
+    const int LEVEL_COUNT = (int)levels.size();
 
     // Timer per level
     const float LEVEL_TIME_LIMIT = 30.f;
     float timeLeft = LEVEL_TIME_LIMIT;
     sf::Clock clock;
+
+    sf::RenderWindow window(sf::VideoMode({ W, H }), "67 Hunt");
+    window.setFramerateLimit(120);
+
+    enum class GameMode { Menu, Playing, Win, Lose };
+    GameMode mode = GameMode::Menu;
+
+    int currentLevel = 1; // 1-based
 
     // Camera
     sf::View camera(sf::FloatRect({ 0.f, 0.f }, { (float)W, (float)H }));
@@ -283,7 +470,7 @@ int main() {
     sf::RectangleShape darknessRect({ (float)W, (float)H });
     darknessRect.setFillColor(sf::Color(0, 0, 0, DARK_ALPHA));
 
-    // ---------------- Sprites (player + target) ----------------
+    // ---------------- Sprites ----------------
     // Player fallback
     sf::CircleShape playerCircle(PLAYER_RADIUS);
     playerCircle.setOrigin({ PLAYER_RADIUS, PLAYER_RADIUS });
@@ -349,7 +536,10 @@ int main() {
         std::cout << "Using fallback circle for target.\n";
     }
 
-    // ---------------- Level data (walls + spawns) ----------------
+    // ---------------- World objects (per level) ----------------
+    float WORLD_W = levels[0].worldW;
+    float WORLD_H = levels[0].worldH;
+
     std::vector<sf::RectangleShape> walls;
     std::vector<Segment> wallSegs;
 
@@ -389,72 +579,44 @@ int main() {
         }
         };
 
-    auto loadLevel = [&](int level) {
-        currentLevel = level;
+    auto rebuildWallsFromLevel = [&](const LevelDef& L) {
+        walls.clear();
+        for (const auto& r : L.wallRects) {
+            walls.push_back(makeWall(r.x, r.y, r.w, r.h));
+        }
+        wallSegs = buildWallSegments(walls);
+        };
 
-        // reset timer + mode
+    auto setTitleForLevel = [&]() {
+        const LevelDef& L = levels[currentLevel - 1];
+        window.setTitle("67 Hunt - " + std::to_string(currentLevel) + ": " + L.name);
+        };
+
+    auto loadLevel = [&](int levelIndex1Based) {
+        currentLevel = std::clamp(levelIndex1Based, 1, LEVEL_COUNT);
+        const LevelDef& L = levels[currentLevel - 1];
+
+        WORLD_W = L.worldW;
+        WORLD_H = L.worldH;
+
+        rebuildWallsFromLevel(L);
+        setPlayerPos(L.playerSpawn);
+        setTargetPos(L.targetSpawn);
+
         timeLeft = LEVEL_TIME_LIMIT;
         mode = GameMode::Playing;
 
-        walls.clear();
-
-        if (level == 1) {
-            WORLD_W = 2400.f; WORLD_H = 1800.f;
-
-            // borders
-            walls.push_back(makeWall(0, 0, WORLD_W, 20));
-            walls.push_back(makeWall(0, WORLD_H - 20, WORLD_W, 20));
-            walls.push_back(makeWall(0, 0, 20, WORLD_H));
-            walls.push_back(makeWall(WORLD_W - 20, 0, 20, WORLD_H));
-
-            // obstacles
-            walls.push_back(makeWall(350, 250, 600, 30));
-            walls.push_back(makeWall(300, 450, 30, 500));
-            walls.push_back(makeWall(700, 820, 650, 30));
-            walls.push_back(makeWall(1250, 380, 30, 380));
-            walls.push_back(makeWall(1550, 600, 520, 30));
-            walls.push_back(makeWall(1750, 850, 30, 500));
-            walls.push_back(makeWall(1050, 1250, 900, 30));
-            walls.push_back(makeWall(600, 1100, 30, 450));
-
-            setPlayerPos({ 200.f, 200.f });
-            setTargetPos({ 1950.f, 1400.f });
-        }
-        else { // level 2
-            WORLD_W = 2800.f; WORLD_H = 2000.f;
-
-            // borders
-            walls.push_back(makeWall(0, 0, WORLD_W, 20));
-            walls.push_back(makeWall(0, WORLD_H - 20, WORLD_W, 20));
-            walls.push_back(makeWall(0, 0, 20, WORLD_H));
-            walls.push_back(makeWall(WORLD_W - 20, 0, 20, WORLD_H));
-
-            // more maze-ish
-            walls.push_back(makeWall(250, 250, 900, 30));
-            walls.push_back(makeWall(250, 250, 30, 700));
-            walls.push_back(makeWall(250, 920, 1200, 30));
-
-            walls.push_back(makeWall(600, 520, 30, 850));
-            walls.push_back(makeWall(600, 520, 800, 30));
-            walls.push_back(makeWall(1370, 520, 30, 650));
-            walls.push_back(makeWall(900, 1170, 500, 30));
-
-            walls.push_back(makeWall(1700, 300, 30, 900));
-            walls.push_back(makeWall(1700, 300, 800, 30));
-            walls.push_back(makeWall(2500, 300, 30, 1300));
-            walls.push_back(makeWall(1700, 1570, 830, 30));
-
-            setPlayerPos({ 140.f, 140.f });
-            setTargetPos({ 2550.f, 1750.f });
-        }
-
-        wallSegs = buildWallSegments(walls);
         resetAnimations();
-
-        window.setTitle("67 Hunt - Level " + std::to_string(currentLevel));
+        setTitleForLevel();
         };
 
-    // ---------------- UI (screen space) ----------------
+    auto goToMenu = [&]() {
+        mode = GameMode::Menu;
+        window.setTitle("67 Hunt");
+        window.setView(window.getDefaultView());
+        };
+
+    // ---------------- UI ----------------
     sf::Font font;
     if (!font.openFromFile("assets/fonts/arial.ttf")) {
         std::cout << "Failed to load font: assets/fonts/arial.ttf\n";
@@ -464,30 +626,57 @@ int main() {
     titleText.setCharacterSize(78);
     titleText.setFillColor(sf::Color::White);
 
-    sf::Text menuText(font, "Press 1 for Level 1\nPress 2 for Level 2\nESC to Quit");
-    menuText.setCharacterSize(28);
-    menuText.setFillColor(sf::Color(220, 220, 220));
+    sf::Text menuHelp(font,
+        "W/S = move selection\n"
+        "ENTER = start\n"
+        "ESC = quit",
+        28);
+    menuHelp.setFillColor(sf::Color(200, 200, 200));
+
+    sf::Text menuList(font, "", 28);
+    menuList.setFillColor(sf::Color(230, 230, 230));
 
     sf::Text timerText(font, "Time: 30");
     timerText.setCharacterSize(24);
     timerText.setFillColor(sf::Color::White);
     timerText.setPosition({ 20.f, 20.f });
 
+    sf::Text levelText(font, "", 20);
+    levelText.setFillColor(sf::Color(220, 220, 220));
+    levelText.setPosition({ 20.f, 85.f });
+
     sf::Text centerText(font, "");
     centerText.setCharacterSize(52);
     centerText.setFillColor(sf::Color::White);
 
-    sf::Text hintText(font, "R = restart level    M = menu");
+    sf::Text hintText(font, "N = next   R = restart   M = menu");
     hintText.setCharacterSize(22);
     hintText.setFillColor(sf::Color(220, 220, 220));
     hintText.setPosition({ 20.f, 55.f });
 
-    // Center menu text once
-    setCentered(titleText, W / 2.f, H / 2.f - 140.f);
-    setCentered(menuText, W / 2.f, H / 2.f + 10.f);
+    setCentered(titleText, W / 2.f, H / 2.f - 210.f);
 
-    // Start in menu view
-    window.setView(window.getDefaultView());
+    // Menu selection
+    int menuSelection = 1; // 1-based
+    auto rebuildMenuText = [&]() {
+        std::string s;
+        for (int i = 1; i <= LEVEL_COUNT; ++i) {
+            const auto& L = levels[i - 1];
+            s += (i == menuSelection ? "> " : "  ");
+            s += std::to_string(i) + ". " + L.name;
+            s += "\n";
+        }
+        menuList.setString(s);
+        setCentered(menuList, W / 2.f, H / 2.f + 20.f);
+        setCentered(menuHelp, W / 2.f, H / 2.f + 250.f);
+        };
+    rebuildMenuText();
+
+    // Key edge states
+    bool wasW = false, wasS = false, wasEnter = false, wasM = false, wasR = false, wasN = false;
+
+    // Start in menu
+    goToMenu();
 
     // ---------------- Main loop ----------------
     while (window.isOpen()) {
@@ -497,40 +686,60 @@ int main() {
             if (ev->is<sf::Event::Closed>()) window.close();
         }
 
-        // Global hotkeys
-        if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Escape)) {
-            window.close();
-        }
+        // Always allow escape to quit
+        if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Escape)) window.close();
 
-        // MENU
+        // ---------------- MENU ----------------
         if (mode == GameMode::Menu) {
-            if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Num1)) loadLevel(1);
-            if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Num2)) loadLevel(2);
+            if (pressedOnce(sf::Keyboard::Key::W, wasW)) {
+                menuSelection--;
+                if (menuSelection < 1) menuSelection = LEVEL_COUNT;
+                rebuildMenuText();
+            }
+            if (pressedOnce(sf::Keyboard::Key::S, wasS)) {
+                menuSelection++;
+                if (menuSelection > LEVEL_COUNT) menuSelection = 1;
+                rebuildMenuText();
+            }
+            if (pressedOnce(sf::Keyboard::Key::Enter, wasEnter)) {
+                loadLevel(menuSelection);
+            }
 
-            // Render menu
             window.setView(window.getDefaultView());
             window.clear(sf::Color(10, 10, 14));
             window.draw(titleText);
-            window.draw(menuText);
+            window.draw(menuList);
+            window.draw(menuHelp);
             window.display();
             continue;
         }
 
-        // Back to menu from win/lose
-        if ((mode == GameMode::Win || mode == GameMode::Lose) &&
-            sf::Keyboard::isKeyPressed(sf::Keyboard::Key::M)) {
-            mode = GameMode::Menu;
-            window.setTitle("67 Hunt");
-            continue;
+        // ---------------- PLAY / WIN / LOSE keyboard actions ----------------
+        if ((mode == GameMode::Win || mode == GameMode::Lose)) {
+            if (pressedOnce(sf::Keyboard::Key::M, wasM)) {
+                goToMenu();
+                continue;
+            }
+            if (pressedOnce(sf::Keyboard::Key::R, wasR)) {
+                loadLevel(currentLevel);
+            }
+            if (mode == GameMode::Win && pressedOnce(sf::Keyboard::Key::N, wasN)) {
+                int next = currentLevel + 1;
+                if (next > LEVEL_COUNT) {
+                    goToMenu();
+                    continue;
+                }
+                loadLevel(next);
+            }
+        }
+        else {
+            // keep edge state fresh when not in end screen
+            pressedOnce(sf::Keyboard::Key::M, wasM);
+            pressedOnce(sf::Keyboard::Key::R, wasR);
+            pressedOnce(sf::Keyboard::Key::N, wasN);
         }
 
-        // Restart current level
-        if ((mode == GameMode::Win || mode == GameMode::Lose) &&
-            sf::Keyboard::isKeyPressed(sf::Keyboard::Key::R)) {
-            loadLevel(currentLevel);
-        }
-
-        // Animate sprites (only while playing)
+        // ---------------- Animate sprites (only while playing) ----------------
         if (mode == GameMode::Playing) {
             if (playerSprite) {
                 playerAnimTimer += dt;
@@ -559,7 +768,7 @@ int main() {
             }
         }
 
-        // Update gameplay
+        // ---------------- Update gameplay ----------------
         if (mode == GameMode::Playing) {
             timeLeft -= dt;
             if (timeLeft <= 0.f) {
@@ -587,22 +796,26 @@ int main() {
 
             if (circleIntersectsCircle(getPlayerPos(), PLAYER_RADIUS, getTargetPos(), TARGET_RADIUS)) {
                 mode = GameMode::Win;
-                window.setTitle("67 Hunt - YOU MADE 67! (M = menu)");
+                window.setTitle("67 Hunt - LEVEL CLEARED (N next / M menu)");
             }
         }
 
-        // Camera follow
+        // ---------------- Camera follow ----------------
         {
             sf::Vector2f desired = getPlayerPos();
             sf::Vector2f clamped = clampViewCenter(desired, camera.getSize(), { WORLD_W, WORLD_H });
             camera.setCenter(clamped);
         }
 
-        // UI update
+        // ---------------- UI update ----------------
         timerText.setString("Time: " + std::to_string((int)std::ceil(timeLeft)));
+        {
+            const LevelDef& L = levels[currentLevel - 1];
+            levelText.setString("Level " + std::to_string(currentLevel) + ": " + L.name);
+        }
 
         if (mode == GameMode::Win) {
-            centerText.setString("YOU MADE 67!");
+            centerText.setString("LEVEL COMPLETE!");
             setCentered(centerText, W / 2.f, H / 2.f);
         }
         else if (mode == GameMode::Lose) {
@@ -664,6 +877,8 @@ int main() {
 
         // UI
         window.draw(timerText);
+        window.draw(levelText);
+
         if (mode == GameMode::Win || mode == GameMode::Lose) {
             window.draw(centerText);
             window.draw(hintText);
