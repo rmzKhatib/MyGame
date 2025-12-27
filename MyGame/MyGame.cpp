@@ -1,5 +1,6 @@
 // MyGame.cpp (SFML 3.x)
-// Keyboard-only menu + Multiple named levels + Next level flow + world-space camera + wall-occluded 360° vision (range + warm glow)
+// Levels + Menu + Camera + Wall-occluded 360° vision (range + warm glow)
+// + Powerups: +Time, Speed Boost (temp), Arrow to target (temp), Full Light (temp)
 //
 // Files:
 //   assets/fonts/arial.ttf
@@ -82,7 +83,6 @@ static sf::Vector2f clampViewCenter(sf::Vector2f desiredCenter, sf::Vector2f vie
     return desiredCenter;
 }
 
-// Simple edge-triggered key press (so holding a key doesn't spam)
 static bool pressedOnce(sf::Keyboard::Key key, bool& wasDown) {
     bool down = sf::Keyboard::isKeyPressed(key);
     bool fire = down && !wasDown;
@@ -244,8 +244,16 @@ static sf::VertexArray buildSoftFan_Screen(
     return fan;
 }
 
-// ---------------- Level definitions ----------------
+// ---------------- Levels ----------------
 struct RectF { float x, y, w, h; };
+
+enum class PowerType { AddTime, Speed, Arrow, FullLight };
+
+struct PowerUp {
+    PowerType type;
+    sf::Vector2f pos;
+    bool active = true;
+};
 
 struct LevelDef {
     std::string name;
@@ -253,7 +261,8 @@ struct LevelDef {
     float worldH;
     sf::Vector2f playerSpawn;
     sf::Vector2f targetSpawn;
-    std::vector<RectF> wallRects; // x,y,w,h (simple + compatible)
+    std::vector<RectF> wallRects;
+    std::vector<PowerUp> powerups;
 };
 
 static std::vector<LevelDef> makeLevels() {
@@ -267,13 +276,11 @@ static std::vector<LevelDef> makeLevels() {
         L.playerSpawn = { 200.f, 200.f };
         L.targetSpawn = { 1950.f, 1400.f };
 
-        // borders
         L.wallRects.push_back({ 0, 0, L.worldW, 20 });
         L.wallRects.push_back({ 0, L.worldH - 20, L.worldW, 20 });
         L.wallRects.push_back({ 0, 0, 20, L.worldH });
         L.wallRects.push_back({ L.worldW - 20, 0, 20, L.worldH });
 
-        // obstacles
         L.wallRects.push_back({ 350, 250, 600, 30 });
         L.wallRects.push_back({ 300, 450, 30, 500 });
         L.wallRects.push_back({ 700, 820, 650, 30 });
@@ -282,6 +289,12 @@ static std::vector<LevelDef> makeLevels() {
         L.wallRects.push_back({ 1750, 850, 30, 500 });
         L.wallRects.push_back({ 1050, 1250, 900, 30 });
         L.wallRects.push_back({ 600, 1100, 30, 450 });
+
+        // Powerups (example placements)
+        L.powerups.push_back({ PowerType::AddTime,   { 520.f,  360.f }, true });
+        L.powerups.push_back({ PowerType::Speed,     { 980.f,  980.f }, true });
+        L.powerups.push_back({ PowerType::Arrow,     { 1600.f, 520.f }, true });
+        L.powerups.push_back({ PowerType::FullLight, { 1180.f, 1500.f }, true });
 
         levels.push_back(std::move(L));
     }
@@ -294,13 +307,11 @@ static std::vector<LevelDef> makeLevels() {
         L.playerSpawn = { 140.f, 140.f };
         L.targetSpawn = { 2550.f, 1750.f };
 
-        // borders
         L.wallRects.push_back({ 0, 0, L.worldW, 20 });
         L.wallRects.push_back({ 0, L.worldH - 20, L.worldW, 20 });
         L.wallRects.push_back({ 0, 0, 20, L.worldH });
         L.wallRects.push_back({ L.worldW - 20, 0, 20, L.worldH });
 
-        // maze-ish
         L.wallRects.push_back({ 250, 250, 900, 30 });
         L.wallRects.push_back({ 250, 250, 30, 700 });
         L.wallRects.push_back({ 250, 920, 1200, 30 });
@@ -315,6 +326,10 @@ static std::vector<LevelDef> makeLevels() {
         L.wallRects.push_back({ 2500, 300, 30, 1300 });
         L.wallRects.push_back({ 1700, 1570, 830, 30 });
 
+        L.powerups.push_back({ PowerType::AddTime, { 900.f,  400.f }, true });
+        L.powerups.push_back({ PowerType::Speed,   { 2100.f, 500.f }, true });
+        L.powerups.push_back({ PowerType::Arrow,   { 900.f,  1500.f }, true });
+
         levels.push_back(std::move(L));
     }
 
@@ -326,17 +341,14 @@ static std::vector<LevelDef> makeLevels() {
         L.playerSpawn = { 200.f, 1650.f };
         L.targetSpawn = { 2350.f, 250.f };
 
-        // borders
         L.wallRects.push_back({ 0, 0, L.worldW, 20 });
         L.wallRects.push_back({ 0, L.worldH - 20, L.worldW, 20 });
         L.wallRects.push_back({ 0, 0, 20, L.worldH });
         L.wallRects.push_back({ L.worldW - 20, 0, 20, L.worldH });
 
-        // divider with gap
         L.wallRects.push_back({ 1200, 100, 30, 650 });
         L.wallRects.push_back({ 1200, 950, 30, 850 });
 
-        // lanes
         L.wallRects.push_back({ 250, 250, 700, 30 });
         L.wallRects.push_back({ 250, 450, 700, 30 });
         L.wallRects.push_back({ 1550, 250, 800, 30 });
@@ -345,6 +357,9 @@ static std::vector<LevelDef> makeLevels() {
         L.wallRects.push_back({ 250, 1250, 900, 30 });
         L.wallRects.push_back({ 250, 1450, 900, 30 });
         L.wallRects.push_back({ 1400, 1250, 950, 30 });
+
+        L.powerups.push_back({ PowerType::FullLight, { 700.f,  350.f }, true });
+        L.powerups.push_back({ PowerType::Arrow,     { 1900.f, 350.f }, true });
 
         levels.push_back(std::move(L));
     }
@@ -357,13 +372,11 @@ static std::vector<LevelDef> makeLevels() {
         L.playerSpawn = { 140.f, 140.f };
         L.targetSpawn = { 2050.f, 1450.f };
 
-        // borders
         L.wallRects.push_back({ 0, 0, L.worldW, 20 });
         L.wallRects.push_back({ 0, L.worldH - 20, L.worldW, 20 });
         L.wallRects.push_back({ 0, 0, 20, L.worldH });
         L.wallRects.push_back({ L.worldW - 20, 0, 20, L.worldH });
 
-        // nested boxes
         L.wallRects.push_back({ 300, 300, 1600, 30 });
         L.wallRects.push_back({ 300, 300, 30, 1000 });
         L.wallRects.push_back({ 1870, 300, 30, 1030 });
@@ -374,9 +387,11 @@ static std::vector<LevelDef> makeLevels() {
         L.wallRects.push_back({ 1570, 600, 30, 530 });
         L.wallRects.push_back({ 600, 1100, 1000, 30 });
 
-        // inner blockers
         L.wallRects.push_back({ 900, 750, 30, 350 });
         L.wallRects.push_back({ 1200, 750, 30, 350 });
+
+        L.powerups.push_back({ PowerType::AddTime, { 1100.f, 900.f }, true });
+        L.powerups.push_back({ PowerType::Speed,   { 450.f,  1450.f }, true });
 
         levels.push_back(std::move(L));
     }
@@ -389,13 +404,11 @@ static std::vector<LevelDef> makeLevels() {
         L.playerSpawn = { 160.f, 700.f };
         L.targetSpawn = { 3050.f, 700.f };
 
-        // borders
         L.wallRects.push_back({ 0, 0, L.worldW, 20 });
         L.wallRects.push_back({ 0, L.worldH - 20, L.worldW, 20 });
         L.wallRects.push_back({ 0, 0, 20, L.worldH });
         L.wallRects.push_back({ L.worldW - 20, 0, 20, L.worldH });
 
-        // zigzag corridor
         L.wallRects.push_back({ 400, 200, 30, 1000 });
         L.wallRects.push_back({ 700, 200, 30, 1000 });
         L.wallRects.push_back({ 1000, 200, 30, 1000 });
@@ -406,7 +419,6 @@ static std::vector<LevelDef> makeLevels() {
         L.wallRects.push_back({ 2500, 200, 30, 1000 });
         L.wallRects.push_back({ 2800, 200, 30, 1000 });
 
-        // alternating blockers
         L.wallRects.push_back({ 430, 200, 270, 30 });
         L.wallRects.push_back({ 730, 1170, 270, 30 });
         L.wallRects.push_back({ 1030, 200, 270, 30 });
@@ -416,10 +428,75 @@ static std::vector<LevelDef> makeLevels() {
         L.wallRects.push_back({ 2230, 200, 270, 30 });
         L.wallRects.push_back({ 2530, 1170, 270, 30 });
 
+        L.powerups.push_back({ PowerType::Arrow,     { 800.f,  700.f }, true });
+        L.powerups.push_back({ PowerType::FullLight, { 1600.f, 700.f }, true });
+        L.powerups.push_back({ PowerType::AddTime,   { 2400.f, 700.f }, true });
+
         levels.push_back(std::move(L));
     }
 
     return levels;
+}
+
+// ---------------- Powerup visuals ----------------
+static sf::Color powerColor(PowerType t) {
+    switch (t) {
+    case PowerType::AddTime:   return sf::Color(90, 220, 255);   // cyan-ish
+    case PowerType::Speed:     return sf::Color(120, 255, 120);  // green
+    case PowerType::Arrow:     return sf::Color(255, 200, 70);   // warm yellow
+    case PowerType::FullLight: return sf::Color(220, 160, 255);  // purple
+    }
+    return sf::Color::White;
+}
+
+static char powerLetter(PowerType t) {
+    switch (t) {
+    case PowerType::AddTime:   return 'T';
+    case PowerType::Speed:     return 'S';
+    case PowerType::Arrow:     return 'A';
+    case PowerType::FullLight: return 'L';
+    }
+    return '?';
+}
+
+// Draw a simple arrow (screen-space) from player -> target
+static void drawArrowToTarget(sf::RenderTarget& target, sf::Vector2f from, sf::Vector2f to) {
+    sf::Vector2f d = { to.x - from.x, to.y - from.y };
+    float len = std::sqrt(d.x * d.x + d.y * d.y);
+    if (len < 1.f) return;
+
+    sf::Vector2f dir = { d.x / len, d.y / len };
+    sf::Vector2f perp = { -dir.y, dir.x };
+
+    float arrowLen = 180.f;
+    float startPad = 35.f;
+    float endPad = 55.f;
+
+    // If target is close, shorten arrow
+    float usable = std::max(60.f, std::min(arrowLen, len - (startPad + endPad)));
+    sf::Vector2f start = { from.x + dir.x * startPad, from.y + dir.y * startPad };
+    sf::Vector2f end = { start.x + dir.x * usable, start.y + dir.y * usable };
+
+    // main shaft
+    sf::VertexArray line(sf::PrimitiveType::Lines, 2);
+    line[0].position = start;
+    line[1].position = end;
+    line[0].color = sf::Color(255, 220, 120, 230);
+    line[1].color = sf::Color(255, 220, 120, 230);
+    target.draw(line);
+
+    // arrow head
+    float headSize = 18.f;
+    sf::Vector2f headBase = { end.x - dir.x * headSize, end.y - dir.y * headSize };
+    sf::Vector2f left = { headBase.x + perp.x * (headSize * 0.7f), headBase.y + perp.y * (headSize * 0.7f) };
+    sf::Vector2f right = { headBase.x - perp.x * (headSize * 0.7f), headBase.y - perp.y * (headSize * 0.7f) };
+
+    sf::VertexArray tri(sf::PrimitiveType::Triangles, 3);
+    tri[0].position = end;
+    tri[1].position = left;
+    tri[2].position = right;
+    tri[0].color = tri[1].color = tri[2].color = sf::Color(255, 210, 90, 240);
+    target.draw(tri);
 }
 
 // ---------------- Main ----------------
@@ -427,10 +504,8 @@ int main() {
     const unsigned W = 900;
     const unsigned H = 650;
 
-    // Player/game tuning
     const float PLAYER_RADIUS = 22.f;
     const float TARGET_RADIUS = 18.f;
-    const float PLAYER_SPEED = 320.f;
 
     // Anim
     const float ANIM_FPS = 6.f;
@@ -441,6 +516,19 @@ int main() {
     const std::uint8_t DARK_ALPHA = 250;
     const sf::Color WARM_TINT(255, 190, 140, 255);
     float glowStrength = 120.f;
+
+    // Base gameplay
+    const float BASE_SPEED = 320.f;
+
+    // Powerup tuning (easy knobs)
+    const float PWR_RADIUS = 16.f;
+    const float TIME_ADD_SECONDS = 6.f;
+
+    const float SPEED_MULT = 1.55f;
+    const float SPEED_DURATION = 5.f;
+
+    const float ARROW_DURATION = 6.f;
+    const float FULLLIGHT_DURATION = 5.f;
 
     // Levels
     std::vector<LevelDef> levels = makeLevels();
@@ -462,7 +550,7 @@ int main() {
     // Camera
     sf::View camera(sf::FloatRect({ 0.f, 0.f }, { (float)W, (float)H }));
 
-    // Darkness overlay texture (screen)
+    // Darkness overlay (screen space RT)
     sf::RenderTexture darknessRT;
     if (!darknessRT.resize({ W, H })) {
         std::cout << "Failed to create darkness render texture.\n";
@@ -543,6 +631,14 @@ int main() {
     std::vector<sf::RectangleShape> walls;
     std::vector<Segment> wallSegs;
 
+    // Active powerups for current level
+    std::vector<PowerUp> powerups;
+
+    // Temporary effects state
+    float speedBoostLeft = 0.f;
+    float arrowLeft = 0.f;
+    float fullLightLeft = 0.f;
+
     auto setPlayerPos = [&](sf::Vector2f p) {
         if (playerSprite) playerSprite->setPosition(p);
         playerCircle.setPosition(p);
@@ -592,6 +688,12 @@ int main() {
         window.setTitle("67 Hunt - " + std::to_string(currentLevel) + ": " + L.name);
         };
 
+    auto resetTempEffects = [&]() {
+        speedBoostLeft = 0.f;
+        arrowLeft = 0.f;
+        fullLightLeft = 0.f;
+        };
+
     auto loadLevel = [&](int levelIndex1Based) {
         currentLevel = std::clamp(levelIndex1Based, 1, LEVEL_COUNT);
         const LevelDef& L = levels[currentLevel - 1];
@@ -603,7 +705,11 @@ int main() {
         setPlayerPos(L.playerSpawn);
         setTargetPos(L.targetSpawn);
 
+        // copy powerups fresh (so they respawn each restart)
+        powerups = L.powerups;
+
         timeLeft = LEVEL_TIME_LIMIT;
+        resetTempEffects();
         mode = GameMode::Playing;
 
         resetAnimations();
@@ -645,6 +751,10 @@ int main() {
     levelText.setFillColor(sf::Color(220, 220, 220));
     levelText.setPosition({ 20.f, 85.f });
 
+    sf::Text effectsText(font, "", 18);
+    effectsText.setFillColor(sf::Color(210, 210, 210));
+    effectsText.setPosition({ 20.f, 110.f });
+
     sf::Text centerText(font, "");
     centerText.setCharacterSize(52);
     centerText.setFillColor(sf::Color::White);
@@ -657,7 +767,7 @@ int main() {
     setCentered(titleText, W / 2.f, H / 2.f - 210.f);
 
     // Menu selection
-    int menuSelection = 1; // 1-based
+    int menuSelection = 1;
     auto rebuildMenuText = [&]() {
         std::string s;
         for (int i = 1; i <= LEVEL_COUNT; ++i) {
@@ -686,7 +796,6 @@ int main() {
             if (ev->is<sf::Event::Closed>()) window.close();
         }
 
-        // Always allow escape to quit
         if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Escape)) window.close();
 
         // ---------------- MENU ----------------
@@ -714,7 +823,7 @@ int main() {
             continue;
         }
 
-        // ---------------- PLAY / WIN / LOSE keyboard actions ----------------
+        // ---------------- End screen controls ----------------
         if ((mode == GameMode::Win || mode == GameMode::Lose)) {
             if (pressedOnce(sf::Keyboard::Key::M, wasM)) {
                 goToMenu();
@@ -725,21 +834,24 @@ int main() {
             }
             if (mode == GameMode::Win && pressedOnce(sf::Keyboard::Key::N, wasN)) {
                 int next = currentLevel + 1;
-                if (next > LEVEL_COUNT) {
-                    goToMenu();
-                    continue;
-                }
+                if (next > LEVEL_COUNT) { goToMenu(); continue; }
                 loadLevel(next);
             }
         }
         else {
-            // keep edge state fresh when not in end screen
             pressedOnce(sf::Keyboard::Key::M, wasM);
             pressedOnce(sf::Keyboard::Key::R, wasR);
             pressedOnce(sf::Keyboard::Key::N, wasN);
         }
 
-        // ---------------- Animate sprites (only while playing) ----------------
+        // ---------------- Temporary effect timers ----------------
+        if (mode == GameMode::Playing) {
+            speedBoostLeft = std::max(0.f, speedBoostLeft - dt);
+            arrowLeft = std::max(0.f, arrowLeft - dt);
+            fullLightLeft = std::max(0.f, fullLightLeft - dt);
+        }
+
+        // ---------------- Animate sprites ----------------
         if (mode == GameMode::Playing) {
             if (playerSprite) {
                 playerAnimTimer += dt;
@@ -753,7 +865,6 @@ int main() {
                     playerSprite->setPosition(keepPos);
                 }
             }
-
             if (targetSprite) {
                 targetAnimTimer += dt;
                 while (targetAnimTimer >= frameTime) {
@@ -777,6 +888,9 @@ int main() {
                 window.setTitle("67 Hunt - TIME'S UP (M = menu)");
             }
 
+            float speed = BASE_SPEED;
+            if (speedBoostLeft > 0.f) speed *= SPEED_MULT;
+
             sf::Vector2f dir(0.f, 0.f);
             if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::W)) dir.y -= 1.f;
             if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::S)) dir.y += 1.f;
@@ -785,7 +899,7 @@ int main() {
             dir = normalize(dir);
 
             sf::Vector2f oldPos = getPlayerPos();
-            setPlayerPos(oldPos + dir * PLAYER_SPEED * dt);
+            setPlayerPos(oldPos + dir * speed * dt);
 
             for (const auto& w : walls) {
                 if (circleIntersectsRect(getPlayerPos(), PLAYER_RADIUS, w.getGlobalBounds())) {
@@ -794,6 +908,30 @@ int main() {
                 }
             }
 
+            // --- Powerup pickup check ---
+            for (auto& p : powerups) {
+                if (!p.active) continue;
+                if (circleIntersectsCircle(getPlayerPos(), PLAYER_RADIUS, p.pos, PWR_RADIUS)) {
+                    p.active = false;
+
+                    if (p.type == PowerType::AddTime) {
+                        timeLeft += TIME_ADD_SECONDS;
+                        // optional clamp so it doesn't go crazy:
+                        timeLeft = std::min(timeLeft, LEVEL_TIME_LIMIT + 20.f);
+                    }
+                    else if (p.type == PowerType::Speed) {
+                        speedBoostLeft = std::max(speedBoostLeft, SPEED_DURATION);
+                    }
+                    else if (p.type == PowerType::Arrow) {
+                        arrowLeft = std::max(arrowLeft, ARROW_DURATION);
+                    }
+                    else if (p.type == PowerType::FullLight) {
+                        fullLightLeft = std::max(fullLightLeft, FULLLIGHT_DURATION);
+                    }
+                }
+            }
+
+            // Win condition
             if (circleIntersectsCircle(getPlayerPos(), PLAYER_RADIUS, getTargetPos(), TARGET_RADIUS)) {
                 mode = GameMode::Win;
                 window.setTitle("67 Hunt - LEVEL CLEARED (N next / M menu)");
@@ -814,6 +952,15 @@ int main() {
             levelText.setString("Level " + std::to_string(currentLevel) + ": " + L.name);
         }
 
+        // effects text
+        {
+            std::string e;
+            if (speedBoostLeft > 0.f) e += "Speed: " + std::to_string((int)std::ceil(speedBoostLeft)) + "s  ";
+            if (arrowLeft > 0.f)      e += "Arrow: " + std::to_string((int)std::ceil(arrowLeft)) + "s  ";
+            if (fullLightLeft > 0.f)  e += "Light: " + std::to_string((int)std::ceil(fullLightLeft)) + "s  ";
+            effectsText.setString(e);
+        }
+
         if (mode == GameMode::Win) {
             centerText.setString("LEVEL COMPLETE!");
             setCentered(centerText, W / 2.f, H / 2.f);
@@ -827,57 +974,97 @@ int main() {
         window.clear({ 15, 15, 20 });
         window.setView(camera);
 
+        // powerups (world space)
+        if (font.getInfo().family != "") {
+            for (const auto& p : powerups) {
+                if (!p.active) continue;
+
+                sf::CircleShape c(PWR_RADIUS);
+                c.setOrigin({ PWR_RADIUS, PWR_RADIUS });
+                c.setPosition(p.pos);
+                c.setFillColor(powerColor(p.type));
+                window.draw(c);
+
+                // letter
+                sf::Text t(font, std::string(1, powerLetter(p.type)), 16);
+                t.setFillColor(sf::Color::Black);
+                setCentered(t, p.pos.x, p.pos.y - 1.f);
+                window.draw(t);
+            }
+        }
+        else {
+            // if font failed, still draw circles
+            for (const auto& p : powerups) {
+                if (!p.active) continue;
+                sf::CircleShape c(PWR_RADIUS);
+                c.setOrigin({ PWR_RADIUS, PWR_RADIUS });
+                c.setPosition(p.pos);
+                c.setFillColor(powerColor(p.type));
+                window.draw(c);
+            }
+        }
+
+        // target
         if (targetSprite) window.draw(*targetSprite);
         else window.draw(targetCircle);
 
+        // walls
         for (auto& w : walls) window.draw(w);
 
+        // player
         if (playerSprite) window.draw(*playerSprite);
         else window.draw(playerCircle);
 
         // ---------------- Overlay + UI (screen space) ----------------
         window.setView(window.getDefaultView());
 
-        // Darkness overlay
-        darknessRT.clear(sf::Color(0, 0, 0, 0));
-        darknessRT.draw(darknessRect);
-
-        sf::Vector2f originWorld = getPlayerPos();
-        std::vector<sf::Vector2f> polyWorld = computeVisibilityPolygon(originWorld, wallSegs, LIGHT_RANGE);
-
-        sf::Vector2i originPix = window.mapCoordsToPixel(originWorld, camera);
-        sf::Vector2f originScreen((float)originPix.x, (float)originPix.y);
-
-        std::vector<sf::Vector2f> polyScreen;
-        polyScreen.reserve(polyWorld.size());
-        for (const auto& pW : polyWorld) {
-            sf::Vector2i pix = window.mapCoordsToPixel(pW, camera);
-            polyScreen.push_back({ (float)pix.x, (float)pix.y });
+        // ARROW power: draw arrow on top of world, below UI (so it's visible)
+        if (arrowLeft > 0.f && mode == GameMode::Playing) {
+            sf::Vector2f from = (sf::Vector2f)window.mapCoordsToPixel(getPlayerPos(), camera);
+            sf::Vector2f to = (sf::Vector2f)window.mapCoordsToPixel(getTargetPos(), camera);
+            drawArrowToTarget(window, from, to);
         }
 
-        sf::VertexArray glowFan;
+        // darkness overlay (unless FullLight is active)
+        if (!(fullLightLeft > 0.f && mode == GameMode::Playing)) {
+            darknessRT.clear(sf::Color(0, 0, 0, 0));
+            darknessRT.draw(darknessRect);
 
-        if (polyScreen.size() >= 3) {
-            sf::VertexArray eraseFan = buildSoftFan_Screen(
-                originScreen,
-                polyScreen,
-                LIGHT_RANGE,
-                sf::Color(255, 255, 255, 255)
-            );
-            darknessRT.draw(eraseFan, ERASE_BLEND);
+            sf::Vector2f originWorld = getPlayerPos();
+            std::vector<sf::Vector2f> polyWorld = computeVisibilityPolygon(originWorld, wallSegs, LIGHT_RANGE);
 
-            sf::Color glowColor = WARM_TINT;
-            glowColor.a = static_cast<std::uint8_t>(std::clamp(glowStrength, 0.f, 255.f));
-            glowFan = buildSoftFan_Screen(originScreen, polyScreen, LIGHT_RANGE, glowColor);
+            sf::Vector2i originPix = window.mapCoordsToPixel(originWorld, camera);
+            sf::Vector2f originScreen((float)originPix.x, (float)originPix.y);
+
+            std::vector<sf::Vector2f> polyScreen;
+            polyScreen.reserve(polyWorld.size());
+            for (const auto& pW : polyWorld) {
+                sf::Vector2i pix = window.mapCoordsToPixel(pW, camera);
+                polyScreen.push_back({ (float)pix.x, (float)pix.y });
+            }
+
+            sf::VertexArray glowFan;
+            if (polyScreen.size() >= 3) {
+                sf::VertexArray eraseFan = buildSoftFan_Screen(
+                    originScreen, polyScreen, LIGHT_RANGE,
+                    sf::Color(255, 255, 255, 255)
+                );
+                darknessRT.draw(eraseFan, ERASE_BLEND);
+
+                sf::Color glowColor = WARM_TINT;
+                glowColor.a = static_cast<std::uint8_t>(std::clamp(glowStrength, 0.f, 255.f));
+                glowFan = buildSoftFan_Screen(originScreen, polyScreen, LIGHT_RANGE, glowColor);
+            }
+
+            darknessRT.display();
+            window.draw(sf::Sprite(darknessRT.getTexture()));
+            if (polyScreen.size() >= 3) window.draw(glowFan, ADD_GLOW);
         }
-
-        darknessRT.display();
-        window.draw(sf::Sprite(darknessRT.getTexture()));
-        if (polyScreen.size() >= 3) window.draw(glowFan, ADD_GLOW);
 
         // UI
         window.draw(timerText);
         window.draw(levelText);
+        window.draw(effectsText);
 
         if (mode == GameMode::Win || mode == GameMode::Lose) {
             window.draw(centerText);
